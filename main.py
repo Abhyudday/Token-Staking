@@ -57,9 +57,6 @@ async def test_endpoint(request):
 async def webhook_handler(request):
     """Handle Telegram webhook updates."""
     try:
-        if not app_ready:
-            return web.Response(text="Bot not ready yet", status=503)
-        
         # Get bot and dispatcher from app context
         bot = request.app.get('bot')
         dp = request.app.get('dp')
@@ -149,29 +146,67 @@ async def initialize_full_app():
         config.validate()
         logger.info("Configuration validated successfully")
         
-        # Initialize database
-        db_manager = await get_db_manager()
-        logger.info("Database initialized successfully")
+        # Try to initialize database, but don't fail the entire app if it fails
+        db_manager = None
+        try:
+            db_manager = await get_db_manager()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.warning(f"Database initialization failed: {e}")
+            logger.info("Continuing without database - some features will be limited")
         
-        # Initialize blockchain monitor
-        blockchain_monitor = BlockchainMonitor()
-        await blockchain_monitor.initialize()
-        logger.info("Blockchain monitor initialized successfully")
+        # Try to initialize blockchain monitor, but don't fail the entire app if it fails
+        blockchain_monitor = None
+        try:
+            blockchain_monitor = BlockchainMonitor()
+            await blockchain_monitor.initialize()
+            logger.info("Blockchain monitor initialized successfully")
+        except Exception as e:
+            logger.warning(f"Blockchain monitor initialization failed: {e}")
+            logger.info("Continuing without blockchain monitoring - some features will be limited")
         
         # Create bot and dispatcher
-        bot = create_bot()
-        dp = await create_dispatcher()
-        logger.info("Bot and dispatcher created successfully")
+        bot = None
+        dp = None
+        try:
+            bot = create_bot()
+            dp = await create_dispatcher()
+            logger.info("Bot and dispatcher created successfully")
+        except Exception as e:
+            logger.error(f"Bot initialization failed: {e}")
+            logger.info("Bot functionality will not be available")
         
-        # Start blockchain monitoring in background
-        monitoring_task = asyncio.create_task(
-            blockchain_monitor.start_monitoring(interval_seconds=300)
-        )
-        logger.info("Blockchain monitoring started")
+        # Start blockchain monitoring in background if available
+        monitoring_task = None
+        if blockchain_monitor:
+            try:
+                monitoring_task = asyncio.create_task(
+                    blockchain_monitor.start_monitoring(interval_seconds=300)
+                )
+                logger.info("Blockchain monitoring started")
+            except Exception as e:
+                logger.warning(f"Failed to start blockchain monitoring: {e}")
         
-        # Mark app as ready
-        app_ready = True
-        logger.info("Full application initialization completed successfully")
+        # Store components in app context for webhook handler
+        app = web.get_app()
+        if db_manager:
+            app['db_manager'] = db_manager
+        if blockchain_monitor:
+            app['blockchain_monitor'] = blockchain_monitor
+        if bot:
+            app['bot'] = bot
+        if dp:
+            app['dp'] = dp
+        if monitoring_task:
+            app['monitoring_task'] = monitoring_task
+        
+        # Mark app as ready if at least basic components are working
+        if bot and dp:
+            app_ready = True
+            logger.info("Full application initialization completed successfully")
+        else:
+            logger.warning("Application initialization completed with limited functionality")
+            app_ready = False
         
         return {
             'bot': bot,
