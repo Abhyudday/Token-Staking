@@ -67,9 +67,9 @@ async def webhook_handler(request):
         if not bot or not dp:
             return web.Response(text="Bot not initialized", status=503)
         
-        # Process the webhook update
+        # Process the webhook update using aiogram 3.x method
         update = await request.json()
-        await dp.process_update(update)
+        await dp.feed_update(bot, update)
         
         return web.Response(text="ok", status=200)
         
