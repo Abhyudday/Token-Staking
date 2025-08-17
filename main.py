@@ -4,42 +4,96 @@ import asyncio
 import logging
 import sys
 import signal
+import os
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
-from aiogram import Bot, Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-
-from bot import create_bot, create_dispatcher
-from database import get_db_manager
-from blockchain import BlockchainMonitor
-from config import config
-
-# Configure logging
+# Configure basic logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log')
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Global instances
-bot: Bot = None
-dp: Dispatcher = None
-db_manager = None
-blockchain_monitor = None
+# Global flag to track if full app is ready
+app_ready = False
 
+async def health_check(request):
+    """Health check endpoint - always available."""
+    global app_ready
+    return web.json_response({
+        'status': 'ok',
+        'ready': app_ready,
+        'timestamp': str(datetime.now(timezone.utc)),
+        'message': 'Health endpoint is working'
+    })
 
-@asynccontextmanager
-async def lifespan_context():
-    """Context manager for application lifespan."""
-    global bot, dp, db_manager, blockchain_monitor
+async def test_endpoint(request):
+    """Simple test endpoint to verify server is running."""
+    return web.json_response({
+        'message': 'Server is running',
+        'timestamp': str(datetime.now(timezone.utc))
+    })
+
+def create_minimal_app():
+    """Create minimal web application with just health endpoints."""
+    from aiohttp import web
+    
+    app = web.Application()
+    
+    # Add health check endpoint
+    app.router.add_get('/health', health_check)
+    
+    # Add test endpoint
+    app.router.add_get('/test', test_endpoint)
+    
+    return app
+
+async def start_minimal_server():
+    """Start minimal web server immediately."""
+    from aiohttp import web
+    from config import config
     
     try:
+        app = create_minimal_app()
+        
+        logger.info("Starting minimal web server...")
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # Try to get port from environment, fallback to 8000
+        port = int(os.getenv("PORT", "8000"))
+        
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        
+        logger.info(f"Minimal web server started successfully on port {port}")
+        logger.info("Health endpoint /health is now accessible")
+        
+        return runner, site
+        
+    except Exception as e:
+        logger.error(f"Failed to start minimal web server: {e}")
+        raise
+
+async def initialize_full_app():
+    """Initialize the full application in the background."""
+    global app_ready
+    
+    try:
+        logger.info("Starting full application initialization...")
+        
+        # Import dependencies only when needed
+        from aiogram import Bot, Dispatcher
+        from bot import create_bot, create_dispatcher
+        from database import get_db_manager
+        from blockchain import BlockchainMonitor
+        from config import config
+        
         # Validate configuration
         config.validate()
         logger.info("Configuration validated successfully")
@@ -60,11 +114,15 @@ async def lifespan_context():
         
         # Start blockchain monitoring in background
         monitoring_task = asyncio.create_task(
-            blockchain_monitor.start_monitoring(interval_seconds=300)  # 5 minutes
+            blockchain_monitor.start_monitoring(interval_seconds=300)
         )
         logger.info("Blockchain monitoring started")
         
-        yield {
+        # Mark app as ready
+        app_ready = True
+        logger.info("Full application initialization completed successfully")
+        
+        return {
             'bot': bot,
             'dp': dp,
             'db_manager': db_manager,
@@ -73,215 +131,32 @@ async def lifespan_context():
         }
         
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
-        raise
-    finally:
-        # Cleanup
-        if blockchain_monitor:
-            await blockchain_monitor.close()
-        
-        if db_manager:
-            await db_manager.close()
-        
-        if bot:
-            await bot.session.close()
-        
-        logger.info("Application shutdown completed")
-
-
-async def webhook_handler(request):
-    """Handle webhook requests."""
-    try:
-        # Get bot and dispatcher from app context
-        bot = request.app['bot']
-        dp = request.app['dp']
-        
-        # Create request handler
-        handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-        
-        # Process the webhook
-        return await handler.handle(request)
-        
-    except Exception as e:
-        logger.error(f"Error handling webhook: {e}")
-        return web.Response(status=500)
-
-
-async def health_check(request):
-    """Health check endpoint."""
-    is_ready = request.app.get('is_ready', False)
-    return web.json_response({
-        'status': 'ok',
-        'ready': is_ready,
-        'timestamp': str(datetime.now(timezone.utc))
-    })
-
-
-async def test_endpoint(request):
-    """Simple test endpoint to verify server is running."""
-    return web.json_response({
-        'message': 'Server is running',
-        'timestamp': str(datetime.now(timezone.utc))
-    })
-
-
-def create_app():
-    """Create and configure the web application."""
-    app = web.Application()
-    
-    # Add health check endpoint
-    app.router.add_get('/health', health_check)
-    
-    # Add test endpoint
-    app.router.add_get('/test', test_endpoint)
-    
-    # Add webhook endpoint
-    app.router.add_post('/webhook', webhook_handler)
-    
-    return app
-
-
-async def run_polling():
-    """Run bot in polling mode (for development)."""
-    async with lifespan_context() as context:
-        bot = context['bot']
-        dp = context['dp']
-        
-        logger.info("Starting bot in polling mode...")
-        
-        # Delete webhook
-        await bot.delete_webhook(drop_pending_updates=True)
-        
-        try:
-            await dp.start_polling(bot)
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-        except Exception as e:
-            logger.error(f"Error in polling mode: {e}")
-            raise
-
-
-async def run_webhook():
-    """Run bot in webhook mode (for production)."""
-    # Create web application and start server FIRST so /health is available immediately
-    app = create_app()
-    app['is_ready'] = False
-
-    logger.info("Starting web server (health endpoint available immediately)...")
-
-    try:
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', config.PORT)
-        await site.start()
-        logger.info(f"Web server started successfully on port {config.PORT}")
-        logger.info("Health endpoint /health is now accessible")
-    except Exception as e:
-        logger.error(f"Failed to start web server: {e}")
-        raise
-
-    async def initialize_services():
-        """Initialize dependencies without blocking health endpoint."""
-        try:
-            # Validate configuration
-            config.validate()
-
-            # Initialize database
-            db_manager_local = await get_db_manager()
-            app['db_manager'] = db_manager_local
-
-            # Initialize blockchain monitor
-            blockchain_monitor_local = BlockchainMonitor()
-            await blockchain_monitor_local.initialize()
-            app['blockchain_monitor'] = blockchain_monitor_local
-
-            # Create bot and dispatcher
-            bot_local = create_bot()
-            dp_local = await create_dispatcher()
-            app['bot'] = bot_local
-            app['dp'] = dp_local
-
-            # Start blockchain monitoring in background
-            app['monitoring_task'] = asyncio.create_task(
-                blockchain_monitor_local.start_monitoring(interval_seconds=300)
-            )
-
-            # Set webhook (configure with your Railway public URL)
-            webhook_url = f"https://your-railway-app-url.railway.app/webhook"
-            try:
-                await bot_local.set_webhook(webhook_url)
-                logger.info(f"Webhook set to: {webhook_url}")
-            except Exception as e:
-                logger.warning(f"Could not set webhook: {e}")
-                logger.info("Continuing without webhook (polling fallback if enabled)")
-
-            # Mark app as ready
-            app['is_ready'] = True
-            logger.info("Service initialization completed; app is ready")
-
-        except Exception as e:
-            # Keep server running for health endpoint even if initialization fails
-            app['is_ready'] = False
-            logger.error(f"Service initialization failed: {e}")
-
-    async def shutdown_services():
-        """Cleanup resources on shutdown."""
-        try:
-            monitoring_task = app.get('monitoring_task')
-            if monitoring_task:
-                monitoring_task.cancel()
-            blockchain_monitor_local = app.get('blockchain_monitor')
-            if blockchain_monitor_local:
-                await blockchain_monitor_local.close()
-            db_manager_local = app.get('db_manager')
-            if db_manager_local:
-                await db_manager_local.close()
-            bot_local = app.get('bot')
-            if bot_local:
-                await bot_local.session.close()
-        except Exception as e:
-            logger.warning(f"Error during shutdown: {e}")
-
-    # Kick off initialization in the background
-    asyncio.create_task(initialize_services())
-
-    try:
-        # Keep the server running
-        await asyncio.Event().wait()
-    except KeyboardInterrupt:
-        logger.info("Server stopped by user")
-    finally:
-        await shutdown_services()
-        await runner.cleanup()
-
-
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown."""
-    def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down...")
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+        logger.error(f"Full application initialization failed: {e}")
+        app_ready = False
+        return None
 
 async def main():
     """Main application entry point."""
     try:
-        setup_signal_handlers()
+        # Start minimal server immediately
+        runner, site = await start_minimal_server()
         
-        # Choose mode based on environment
-        if config.ENVIRONMENT == "development":
-            logger.info("Running in development mode (polling)")
-            await run_polling()
-        else:
-            logger.info("Running in production mode (webhook)")
-            await run_webhook()
+        # Initialize full app in background
+        init_task = asyncio.create_task(initialize_full_app())
+        
+        # Keep the server running
+        try:
+            await asyncio.Event().wait()
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+        finally:
+            # Cleanup
+            init_task.cancel()
+            await runner.cleanup()
             
     except Exception as e:
         logger.error(f"Application error: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     try:
