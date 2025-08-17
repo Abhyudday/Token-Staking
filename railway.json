@@ -4,9 +4,10 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python start.py",
-    "healthcheckPath": "/ready",
-    "healthcheckTimeout": 60,
+    "startCommand": "python main.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300,
+    "healthcheckInterval": 30,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   },

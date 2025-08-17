@@ -67,6 +67,14 @@ class DatabaseManager:
                 await session.rollback()
                 raise
     
+    async def ping(self):
+        """Test database connectivity."""
+        if not self.engine:
+            raise RuntimeError("Database not initialized")
+        
+        async with self.engine.begin() as conn:
+            await conn.execute(select(1))
+    
     async def close(self):
         """Close database connections."""
         if self.engine:
