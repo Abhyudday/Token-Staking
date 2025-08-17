@@ -15,6 +15,8 @@ import asyncio
 import logging
 import sys
 import signal
+import os
+import traceback
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -262,6 +264,12 @@ async def run_polling():
         bot = context['bot']
         dp = context['dp']
         
+        if not bot or not dp:
+            logger.warning("Bot or dispatcher not available, cannot run in polling mode")
+            logger.info("Starting web server instead...")
+            await run_webhook()
+            return
+        
         logger.info("Starting bot in polling mode...")
         
         # Delete webhook
@@ -352,6 +360,12 @@ def setup_signal_handlers():
 async def main():
     """Main application entry point."""
     try:
+        logger.info("=== Application Starting ===")
+        logger.info(f"Environment: {config.ENVIRONMENT}")
+        logger.info(f"Port: {config.PORT}")
+        logger.info(f"Python version: {sys.version}")
+        logger.info(f"Working directory: {os.getcwd()}")
+        
         setup_signal_handlers()
         
         # Choose mode based on environment
@@ -364,11 +378,18 @@ async def main():
             
     except Exception as e:
         logger.error(f"Application error: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
     try:
+        # Add a small delay to ensure Railway environment is ready
+        import time
+        logger.info("Starting application in 2 seconds...")
+        time.sleep(2)
+        
+        logger.info("Launching application...")
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Application stopped by user")
