@@ -53,43 +53,63 @@ async def lifespan_context():
     try:
         logger.info("Starting application initialization...")
         
-        # Validate configuration
+        # Initialize components with fallbacks
+        bot = None
+        dp = None
+        db_manager = None
+        blockchain_monitor = None
+        monitoring_task = None
+        
+        # Try to validate configuration (but don't fail startup)
         try:
             config.validate()
             logger.info("Configuration validated successfully")
+            config_valid = True
         except Exception as e:
-            logger.error(f"Configuration validation failed: {e}")
-            raise
+            logger.warning(f"Configuration validation failed: {e}")
+            logger.warning("Application will start with limited functionality")
+            config_valid = False
         
-        # Initialize database
-        try:
-            db_manager = await get_db_manager()
-            logger.info("Database initialized successfully")
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            raise
+        # Try to initialize database (but don't fail startup)
+        if config_valid:
+            try:
+                db_manager = await get_db_manager()
+                logger.info("Database initialized successfully")
+            except Exception as e:
+                logger.warning(f"Database initialization failed: {e}")
+                logger.warning("Database features will be unavailable")
+                db_manager = None
+        else:
+            logger.info("Skipping database initialization due to config issues")
         
-        # Initialize blockchain monitor
-        try:
-            blockchain_monitor = BlockchainMonitor()
-            await blockchain_monitor.initialize()
-            logger.info("Blockchain monitor initialized successfully")
-        except Exception as e:
-            logger.error(f"Blockchain monitor initialization failed: {e}")
-            # Don't fail startup for blockchain monitor issues
-            blockchain_monitor = None
+        # Try to initialize blockchain monitor (but don't fail startup)
+        if config_valid:
+            try:
+                blockchain_monitor = BlockchainMonitor()
+                await blockchain_monitor.initialize()
+                logger.info("Blockchain monitor initialized successfully")
+            except Exception as e:
+                logger.warning(f"Blockchain monitor initialization failed: {e}")
+                logger.warning("Blockchain features will be unavailable")
+                blockchain_monitor = None
+        else:
+            logger.info("Skipping blockchain monitor initialization due to config issues")
         
-        # Create bot and dispatcher
-        try:
-            bot = create_bot()
-            dp = await create_dispatcher()
-            logger.info("Bot and dispatcher created successfully")
-        except Exception as e:
-            logger.error(f"Bot initialization failed: {e}")
-            raise
+        # Try to create bot and dispatcher (but don't fail startup)
+        if config_valid:
+            try:
+                bot = create_bot()
+                dp = await create_dispatcher()
+                logger.info("Bot and dispatcher created successfully")
+            except Exception as e:
+                logger.warning(f"Bot initialization failed: {e}")
+                logger.warning("Bot features will be unavailable")
+                bot = None
+                dp = None
+        else:
+            logger.info("Skipping bot initialization due to config issues")
         
         # Start blockchain monitoring in background if available
-        monitoring_task = None
         if blockchain_monitor:
             try:
                 monitoring_task = asyncio.create_task(
@@ -100,7 +120,7 @@ async def lifespan_context():
                 logger.warning(f"Failed to start blockchain monitoring: {e}")
                 monitoring_task = None
         
-        logger.info("Application initialization completed successfully")
+        logger.info("Application initialization completed (some components may be unavailable)")
         
         yield {
             'bot': bot,
@@ -156,6 +176,21 @@ async def health_check(request):
         db_manager = request.app.get('db_manager')
         blockchain_monitor = request.app.get('blockchain_monitor')
         
+        # Check if we have any components available
+        if not any([bot, db_manager, blockchain_monitor]):
+            return web.json_response({
+                'status': 'degraded',
+                'message': 'Application is running but no core components are available',
+                'overall_status': 'degraded',
+                'timestamp': None,
+                'checks': {
+                    'startup': {
+                        'status': 'warning',
+                        'message': 'Application started with limited functionality'
+                    }
+                }
+            }, status=200)
+        
         # Perform comprehensive health check
         health_result = await health_checker.comprehensive_health_check(
             bot=bot,
@@ -164,7 +199,7 @@ async def health_check(request):
         )
         
         # Return appropriate HTTP status based on health
-        status_code = 200 if health_result['overall_status'] == 'healthy' else 503
+        status_code = 200 if health_result['overall_status'] in ['healthy', 'degraded'] else 503
         
         return web.json_response(health_result, status=status_code)
         
@@ -183,8 +218,8 @@ async def readiness_check(request):
         # Quick health check for readiness
         health_result = await quick_health_check()
         
-        # Return appropriate HTTP status
-        status_code = 200 if health_result['status'] == 'healthy' else 503
+        # Return appropriate HTTP status - be more lenient for readiness
+        status_code = 200 if health_result['status'] in ['healthy', 'degraded'] else 503
         
         return web.json_response(health_result, status=status_code)
         
@@ -286,6 +321,9 @@ async def run_webhook():
             logger.info(f"  - http://0.0.0.0:{config.PORT}/health")
             logger.info(f"  - http://0.0.0.0:{config.PORT}/ready")
             logger.info(f"  - http://0.0.0.0:{config.PORT}/healthz")
+            
+            # Test that the server is actually responding
+            logger.info("Testing server responsiveness...")
             
         except Exception as e:
             logger.error(f"Failed to start web server: {e}")

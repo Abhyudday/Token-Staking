@@ -1,0 +1,2 @@
+2025-08-18 01:36:24,508 - healthcheck - ERROR - Configuration validation failed: Missing required environment variables: BOT_TOKEN, DATABASE_URL, TATUM_API_KEY, TOKEN_CONTRACT_ADDRESS
+2025-08-18 01:39:08,947 - healthcheck - ERROR - Configuration validation failed: Missing required environment variables: BOT_TOKEN, DATABASE_URL, TATUM_API_KEY, TOKEN_CONTRACT_ADDRESS

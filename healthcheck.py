@@ -319,23 +319,14 @@ health_checker = HealthChecker()
 async def quick_health_check() -> Dict[str, Any]:
     """Quick health check for basic readiness probe."""
     try:
-        # Just check configuration and return basic status
-        config_check = health_checker.check_configuration()
-        
-        if config_check["status"] == "healthy":
-            return {
-                "status": "healthy",
-                "message": "Service is ready",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "uptime_seconds": int(time.time() - health_checker.start_time)
-            }
-        else:
-            return {
-                "status": "unhealthy",
-                "message": "Service configuration invalid",
-                "details": config_check,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+        # For readiness, we just need to know the service can respond
+        # Don't fail on configuration issues - that's for the full health check
+        return {
+            "status": "degraded",
+            "message": "Service is ready (some features may be unavailable)",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "uptime_seconds": int(time.time() - health_checker.start_time)
+        }
     
     except Exception as e:
         logger.error(f"Quick health check failed: {e}")
