@@ -233,21 +233,31 @@ async def readiness_check(request):
         }, status=503)
 
 
+async def startup_check(request):
+    """Startup check - responds immediately when server is running."""
+    return web.json_response({
+        'status': 'starting',
+        'message': 'Server is starting up',
+        'timestamp': None
+    })
+
+
+async def immediate_health(request):
+    """Immediate health check that always responds."""
+    return web.json_response({
+        'status': 'ok',
+        'message': 'Server is running',
+        'timestamp': None
+    })
+
+
 async def create_app():
     """Create and configure the web application."""
     app = web.Application()
     
-    # Add startup health check (responds immediately)
-    async def startup_check(request):
-        """Startup check - responds immediately when server is running."""
-        return web.json_response({
-            'status': 'starting',
-            'message': 'Server is starting up',
-            'timestamp': None
-        })
-    
     # Add health check endpoints
     app.router.add_get('/', startup_check)  # Root endpoint for basic connectivity
+    app.router.add_get('/immediate', immediate_health)  # Always responds
     app.router.add_get('/health', health_check)
     app.router.add_get('/ready', readiness_check)
     app.router.add_get('/healthz', readiness_check)  # Common Kubernetes readiness probe path
@@ -332,6 +342,10 @@ async def run_webhook():
             
             # Test that the server is actually responding
             logger.info("Testing server responsiveness...")
+            
+            # Add a small delay to ensure server is fully ready
+            await asyncio.sleep(1)
+            logger.info("Server is ready to accept connections")
             
         except Exception as e:
             logger.error(f"Failed to start web server: {e}")

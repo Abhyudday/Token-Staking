@@ -27,14 +27,20 @@ def main():
         logger.info(f"Current working directory: {os.getcwd()}")
         logger.info(f"Python executable: {sys.executable}")
         logger.info(f"Python version: {sys.version}")
-        logger.info(f"Environment variables:")
+        logger.info("Environment variables:")
         for key, value in os.environ.items():
-            if key in ['ENVIRONMENT', 'PORT', 'RAILWAY_PUBLIC_DOMAIN']:
+            if key in ['ENVIRONMENT', 'PORT', 'RAILWAY_PUBLIC_DOMAIN', 'RAILWAY_STATIC_URL']:
+                logger.info(f"  {key}: {value}")
+        
+        # Log all environment variables for debugging (filter sensitive ones)
+        logger.info("All environment variables (filtered):")
+        for key, value in os.environ.items():
+            if not any(sensitive in key.lower() for sensitive in ['token', 'key', 'password', 'secret']):
                 logger.info(f"  {key}: {value}")
         
         # Wait a moment for Railway environment to be ready
-        logger.info("Waiting 3 seconds for Railway environment...")
-        time.sleep(3)
+        logger.info("Waiting 2 seconds for Railway environment...")
+        time.sleep(2)
         
         # Import and run the main application
         logger.info("Importing main application...")
