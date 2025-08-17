@@ -30,6 +30,7 @@ class Config:
     # Application Settings
     PORT: int = int(os.getenv("PORT", "8000"))
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    RAILWAY_PUBLIC_DOMAIN: str = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     
     # Holder Requirements
     MINIMUM_HOLD_DAYS: int = 30

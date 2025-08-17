@@ -51,29 +51,56 @@ async def lifespan_context():
     global bot, dp, db_manager, blockchain_monitor
     
     try:
+        logger.info("Starting application initialization...")
+        
         # Validate configuration
-        config.validate()
-        logger.info("Configuration validated successfully")
+        try:
+            config.validate()
+            logger.info("Configuration validated successfully")
+        except Exception as e:
+            logger.error(f"Configuration validation failed: {e}")
+            raise
         
         # Initialize database
-        db_manager = await get_db_manager()
-        logger.info("Database initialized successfully")
+        try:
+            db_manager = await get_db_manager()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Database initialization failed: {e}")
+            raise
         
         # Initialize blockchain monitor
-        blockchain_monitor = BlockchainMonitor()
-        await blockchain_monitor.initialize()
-        logger.info("Blockchain monitor initialized successfully")
+        try:
+            blockchain_monitor = BlockchainMonitor()
+            await blockchain_monitor.initialize()
+            logger.info("Blockchain monitor initialized successfully")
+        except Exception as e:
+            logger.error(f"Blockchain monitor initialization failed: {e}")
+            # Don't fail startup for blockchain monitor issues
+            blockchain_monitor = None
         
         # Create bot and dispatcher
-        bot = create_bot()
-        dp = await create_dispatcher()
-        logger.info("Bot and dispatcher created successfully")
+        try:
+            bot = create_bot()
+            dp = await create_dispatcher()
+            logger.info("Bot and dispatcher created successfully")
+        except Exception as e:
+            logger.error(f"Bot initialization failed: {e}")
+            raise
         
-        # Start blockchain monitoring in background
-        monitoring_task = asyncio.create_task(
-            blockchain_monitor.start_monitoring(interval_seconds=300)  # 5 minutes
-        )
-        logger.info("Blockchain monitoring started")
+        # Start blockchain monitoring in background if available
+        monitoring_task = None
+        if blockchain_monitor:
+            try:
+                monitoring_task = asyncio.create_task(
+                    blockchain_monitor.start_monitoring(interval_seconds=300)  # 5 minutes
+                )
+                logger.info("Blockchain monitoring started")
+            except Exception as e:
+                logger.warning(f"Failed to start blockchain monitoring: {e}")
+                monitoring_task = None
+        
+        logger.info("Application initialization completed successfully")
         
         yield {
             'bot': bot,
@@ -84,20 +111,23 @@ async def lifespan_context():
         }
         
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
+        logger.error(f"Critical error during startup: {e}")
         raise
     finally:
         # Cleanup
-        if blockchain_monitor:
-            await blockchain_monitor.close()
-        
-        if db_manager:
-            await db_manager.close()
-        
-        if bot:
-            await bot.session.close()
-        
-        logger.info("Application shutdown completed")
+        try:
+            if blockchain_monitor:
+                await blockchain_monitor.close()
+            
+            if db_manager:
+                await db_manager.close()
+            
+            if bot:
+                await bot.session.close()
+            
+            logger.info("Application shutdown completed")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
 
 
 async def webhook_handler(request):
@@ -170,7 +200,17 @@ async def create_app():
     """Create and configure the web application."""
     app = web.Application()
     
+    # Add startup health check (responds immediately)
+    async def startup_check(request):
+        """Startup check - responds immediately when server is running."""
+        return web.json_response({
+            'status': 'starting',
+            'message': 'Server is starting up',
+            'timestamp': None
+        })
+    
     # Add health check endpoints
+    app.router.add_get('/', startup_check)  # Root endpoint for basic connectivity
     app.router.add_get('/health', health_check)
     app.router.add_get('/ready', readiness_check)
     app.router.add_get('/healthz', readiness_check)  # Common Kubernetes readiness probe path
@@ -219,24 +259,37 @@ async def run_webhook():
         
         logger.info("Starting bot in webhook mode...")
         
-        # Set webhook (you'll need to configure this with your Railway URL)
-        webhook_url = f"https://your-railway-app-url.railway.app/webhook"
+        # Try to set webhook if RAILWAY_PUBLIC_DOMAIN is available
+        webhook_url = None
+        if hasattr(config, 'RAILWAY_PUBLIC_DOMAIN') and config.RAILWAY_PUBLIC_DOMAIN:
+            webhook_url = f"https://{config.RAILWAY_PUBLIC_DOMAIN}/webhook"
+            try:
+                await bot.set_webhook(webhook_url)
+                logger.info(f"Webhook set to: {webhook_url}")
+            except Exception as e:
+                logger.warning(f"Could not set webhook: {e}")
+                webhook_url = None
         
-        try:
-            await bot.set_webhook(webhook_url)
-            logger.info(f"Webhook set to: {webhook_url}")
-        except Exception as e:
-            logger.warning(f"Could not set webhook: {e}")
-            logger.info("Running without webhook (polling fallback)")
+        if not webhook_url:
+            logger.info("Running without webhook (webhook not configured)")
         
         # Start web server
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        site = web.TCPSite(runner, '0.0.0.0', config.PORT)
-        await site.start()
-        
-        logger.info(f"Web server started on port {config.PORT}")
+        try:
+            runner = web.AppRunner(app)
+            await runner.setup()
+            
+            site = web.TCPSite(runner, '0.0.0.0', config.PORT)
+            await site.start()
+            
+            logger.info(f"Web server started on port {config.PORT}")
+            logger.info("Health check endpoints available at:")
+            logger.info(f"  - http://0.0.0.0:{config.PORT}/health")
+            logger.info(f"  - http://0.0.0.0:{config.PORT}/ready")
+            logger.info(f"  - http://0.0.0.0:{config.PORT}/healthz")
+            
+        except Exception as e:
+            logger.error(f"Failed to start web server: {e}")
+            raise
         
         try:
             # Keep the server running
