@@ -187,8 +187,15 @@ async def run_webhook():
         
         logger.info(f"Web server started on port {config.PORT}")
         
-        # Add a small delay to ensure all services are ready
-        await asyncio.sleep(2)
+        # Add a configurable delay to ensure all services are ready
+        startup_delay = config.STARTUP_DELAY
+        logger.info(f"Waiting {startup_delay} seconds for services to stabilize...")
+        await asyncio.sleep(startup_delay)
+        
+        # Mark startup as complete for health checks
+        from healthcheck import health_checker
+        health_checker.mark_startup_complete()
+        
         logger.info("All services initialized, health checks are now active")
         
         try:

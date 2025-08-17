@@ -30,6 +30,7 @@ class Config:
     # Application Settings
     PORT: int = int(os.getenv("PORT", "8000"))
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    STARTUP_DELAY: int = int(os.getenv("STARTUP_DELAY", "5"))  # Seconds to wait before health checks become strict
     
     # Holder Requirements
     MINIMUM_HOLD_DAYS: int = 30

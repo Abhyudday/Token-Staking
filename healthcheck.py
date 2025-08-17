@@ -18,6 +18,10 @@ class HealthChecker:
         self.blockchain_monitor = None
         self.bot = None
         self.dp = None
+        self.startup_complete = False
+        self.startup_time = None
+        self.app_start_time = asyncio.get_event_loop().time()
+        logger.info("Health checker initialized")
     
     def set_services(self, db_manager=None, blockchain_monitor=None, bot=None, dp=None):
         """Set service references for health checking."""
@@ -25,6 +29,12 @@ class HealthChecker:
         self.blockchain_monitor = blockchain_monitor
         self.bot = bot
         self.dp = dp
+    
+    def mark_startup_complete(self):
+        """Mark that startup is complete and health checks should be strict."""
+        self.startup_complete = True
+        self.startup_time = asyncio.get_event_loop().time()
+        logger.info("Health checker marked startup as complete")
     
     async def check_database(self) -> Dict[str, Any]:
         """Check database connectivity."""
@@ -187,6 +197,35 @@ async def simple_health_check(request):
     )
 
 
+async def immediate_health_check(request):
+    """Immediate health check that responds instantly without checking services."""
+    try:
+        # Calculate uptime
+        uptime = asyncio.get_event_loop().time() - health_checker.app_start_time
+        startup_status = "STARTUP_COMPLETE" if health_checker.startup_complete else "STARTING_UP"
+        
+        response_text = f"RUNNING\nUptime: {uptime:.1f}s\nStatus: {startup_status}"
+        
+        return web.Response(
+            text=response_text,
+            status=200,
+            headers={
+                "Content-Type": "text/plain",
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Immediate health check failed: {e}")
+        return web.Response(
+            text="ERROR",
+            status=500,
+            headers={
+                "Content-Type": "text/plain",
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
+
+
 async def readiness_check(request):
     """Readiness check that verifies the application is ready to serve requests."""
     try:
@@ -221,12 +260,52 @@ async def readiness_check(request):
         )
 
 
+async def startup_health_check(request):
+    """Health check that's more lenient during startup."""
+    try:
+        if health_checker.startup_complete:
+            # Startup is complete, do a full health check
+            health_result = await health_checker.perform_health_check()
+            status = health_result.get("http_status", 200)
+            
+            return web.json_response(
+                health_result,
+                status=status,
+                headers={
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache, no-store, must-revalidate"
+                }
+            )
+        else:
+            # Still starting up, return startup status
+            return web.Response(
+                text="STARTING_UP",
+                status=200,
+                headers={
+                    "Content-Type": "text/plain",
+                    "Cache-Control": "no-cache, no-store, must-revalidate"
+                }
+            )
+    except Exception as e:
+        logger.error(f"Startup health check failed: {e}")
+        return web.Response(
+            text="ERROR",
+            status=500,
+            headers={
+                "Content-Type": "text/plain",
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
+
+
 def setup_health_routes(app: web.Application):
     """Setup health check routes on the application."""
-    app.router.add_get('/health', health_check_handler)
+    app.router.add_get('/health', immediate_health_check)  # Immediate response for Railway
+    app.router.add_get('/health/startup', startup_health_check)  # Startup-aware health check
+    app.router.add_get('/health/full', health_check_handler)  # Full health check
     app.router.add_get('/health/simple', simple_health_check)
     app.router.add_get('/health/ready', readiness_check)
-    app.router.add_get('/', simple_health_check)  # Root endpoint also serves as health check
+    app.router.add_get('/', immediate_health_check)  # Root endpoint also serves as health check
 
 
 def set_health_checker_services(db_manager=None, blockchain_monitor=None, bot=None, dp=None):
