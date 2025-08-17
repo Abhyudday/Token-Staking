@@ -8,6 +8,9 @@ import os
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
+# Import aiohttp at the top level to avoid import issues
+from aiohttp import web
+
 # Configure basic logging first
 logging.basicConfig(
     level=logging.INFO,
@@ -24,25 +27,50 @@ app_ready = False
 async def health_check(request):
     """Health check endpoint - always available."""
     global app_ready
-    return web.json_response({
-        'status': 'ok',
-        'ready': app_ready,
-        'timestamp': str(datetime.now(timezone.utc)),
-        'message': 'Health endpoint is working'
-    })
+    try:
+        return web.json_response({
+            'status': 'ok',
+            'ready': app_ready,
+            'timestamp': str(datetime.now(timezone.utc)),
+            'message': 'Health endpoint is working'
+        })
+    except Exception as e:
+        logger.error(f"Error in health check: {e}")
+        # Fallback to plain text response if JSON fails
+        return web.Response(text="ok", status=200)
+
+async def root_endpoint(request):
+    """Root endpoint for basic connectivity test."""
+    return web.Response(text="Server is running", status=200)
 
 async def test_endpoint(request):
     """Simple test endpoint to verify server is running."""
-    return web.json_response({
-        'message': 'Server is running',
-        'timestamp': str(datetime.now(timezone.utc))
-    })
+    try:
+        return web.json_response({
+            'message': 'Server is running',
+            'timestamp': str(datetime.now(timezone.utc))
+        })
+    except Exception as e:
+        logger.error(f"Error in test endpoint: {e}")
+        return web.Response(text="Server is running", status=200)
 
 def create_minimal_app():
     """Create minimal web application with just health endpoints."""
-    from aiohttp import web
-    
     app = web.Application()
+    
+    # Add error handling middleware
+    @web.middleware
+    async def error_middleware(request, handler):
+        try:
+            return await handler(request)
+        except Exception as e:
+            logger.error(f"Unhandled error in {request.path}: {e}")
+            return web.Response(text="Internal error", status=500)
+    
+    app.middlewares.append(error_middleware)
+    
+    # Add root endpoint
+    app.router.add_get('/', root_endpoint)
     
     # Add health check endpoint
     app.router.add_get('/health', health_check)
@@ -54,9 +82,6 @@ def create_minimal_app():
 
 async def start_minimal_server():
     """Start minimal web server immediately."""
-    from aiohttp import web
-    from config import config
-    
     try:
         app = create_minimal_app()
         
