@@ -23,21 +23,27 @@ class BlockchainMonitor:
     
     async def initialize(self):
         """Initialize the monitor."""
-        self.db_manager = await get_db_manager()
-        
-        # Get last checked block from database settings
-        last_block_str = await self.db_manager.get_setting("last_checked_block")
-        if last_block_str:
-            self.last_checked_block = int(last_block_str)
-        else:
-            # Start from current block
+        try:
+            self.db_manager = await get_db_manager()
+            
+            # Get last checked block from database settings
+            last_block_str = await self.db_manager.get_setting("last_checked_block")
+            if last_block_str:
+                self.last_checked_block = int(last_block_str)
+            else:
+                # Start from current block
+                self.last_checked_block = await self.tatum.get_latest_block_number()
+                if self.last_checked_block:
+                    await self.db_manager.set_setting(
+                        "last_checked_block", 
+                        str(self.last_checked_block),
+                        "Last blockchain block checked for transactions"
+                    )
+        except Exception as e:
+            logger.warning(f"Database initialization failed for blockchain monitor: {e}")
+            self.db_manager = None
+            # Start from current block without database
             self.last_checked_block = await self.tatum.get_latest_block_number()
-            if self.last_checked_block:
-                await self.db_manager.set_setting(
-                    "last_checked_block", 
-                    str(self.last_checked_block),
-                    "Last blockchain block checked for transactions"
-                )
     
     async def start_monitoring(self, interval_seconds: int = 300):
         """Start monitoring blockchain for new transactions."""
@@ -80,7 +86,11 @@ class BlockchainMonitor:
             
             # Update last checked block
             self.last_checked_block = current_block
-            await self.db_manager.set_setting("last_checked_block", str(current_block))
+            if self.db_manager:
+                try:
+                    await self.db_manager.set_setting("last_checked_block", str(current_block))
+                except Exception as e:
+                    logger.warning(f"Could not save last checked block to database: {e}")
             
             if new_holders:
                 logger.info(f"Processed {len(new_holders)} new transactions up to block {current_block}")
@@ -103,24 +113,30 @@ class BlockchainMonitor:
                 logger.warning(f"Could not get balance for wallet {wallet_address}")
                 current_balance = amount
             
-            # Create or update holder
-            holder = await self.db_manager.create_or_update_holder(
-                wallet_address=wallet_address,
-                current_balance=current_balance
-            )
-            
-            # Add transaction
-            transaction = await self.db_manager.add_transaction(
-                holder_id=holder.id,
-                transaction_hash=tx_hash,
-                transaction_type="buy",  # Assuming new holders are buying
-                amount=amount,
-                block_number=block_number,
-                timestamp=timestamp
-            )
-            
-            if transaction:
-                logger.info(f"New holder transaction: {wallet_address[:8]}... bought {amount} tokens")
+            # Create or update holder if database is available
+            if self.db_manager:
+                try:
+                    holder = await self.db_manager.create_or_update_holder(
+                        wallet_address=wallet_address,
+                        current_balance=current_balance
+                    )
+                    
+                    # Add transaction
+                    transaction = await self.db_manager.add_transaction(
+                        holder_id=holder.id,
+                        transaction_hash=tx_hash,
+                        transaction_type="buy",  # Assuming new holders are buying
+                        amount=amount,
+                        block_number=block_number,
+                        timestamp=timestamp
+                    )
+                    
+                    if transaction:
+                        logger.info(f"New holder transaction: {wallet_address[:8]}... bought {amount} tokens")
+                except Exception as e:
+                    logger.warning(f"Could not save holder data to database: {e}")
+            else:
+                logger.info(f"New holder detected (no database): {wallet_address[:8]}... bought {amount} tokens")
             
         except Exception as e:
             logger.error(f"Error processing new holder {holder_data}: {e}")

@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Global flag to track if full app is ready
 app_ready = False
+# Global context for app components
+app_context_global = {}
 
 async def health_check(request):
     """Health check endpoint - always available."""
@@ -57,9 +59,10 @@ async def test_endpoint(request):
 async def webhook_handler(request):
     """Handle Telegram webhook updates."""
     try:
-        # Get bot and dispatcher from app context
-        bot = request.app.get('bot')
-        dp = request.app.get('dp')
+        # Get bot and dispatcher from global context
+        global app_context_global
+        bot = app_context_global.get('bot')
+        dp = app_context_global.get('dp')
         
         if not bot or not dp:
             return web.Response(text="Bot not initialized", status=503)
@@ -188,17 +191,22 @@ async def initialize_full_app():
                 logger.warning(f"Failed to start blockchain monitoring: {e}")
         
         # Store components in app context for webhook handler
-        app = web.get_app()
+        # Get the current app from the request context or create a simple dict
+        app_context = {}
         if db_manager:
-            app['db_manager'] = db_manager
+            app_context['db_manager'] = db_manager
         if blockchain_monitor:
-            app['blockchain_monitor'] = blockchain_monitor
+            app_context['blockchain_monitor'] = blockchain_monitor
         if bot:
-            app['bot'] = bot
+            app_context['bot'] = bot
         if dp:
-            app['dp'] = dp
+            app_context['dp'] = dp
         if monitoring_task:
-            app['monitoring_task'] = monitoring_task
+            app_context['monitoring_task'] = monitoring_task
+        
+        # Store in global context for webhook handler
+        global app_context_global
+        app_context_global = app_context
         
         # Mark app as ready if at least basic components are working
         if bot and dp:
