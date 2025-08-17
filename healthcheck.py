@@ -1,313 +1,374 @@
-"""Health check module for the Telegram rewards bot."""
+"""
+Health check utilities for the Telegram rewards bot.
+
+This module provides comprehensive health checks for all application components
+including database connectivity, bot status, blockchain monitor, and external APIs.
+"""
 
 import asyncio
 import logging
-import aiohttp
-from aiohttp import web
+import time
 from typing import Dict, Any, Optional
-from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+import httpx
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
+
+from config import config
+from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
 class HealthChecker:
-    """Health checker for application services."""
+    """Comprehensive health checker for all application components."""
     
     def __init__(self):
-        self.db_manager = None
-        self.blockchain_monitor = None
-        self.bot = None
-        self.dp = None
-        self.startup_complete = False
-        self.startup_time = None
-        self.app_start_time = asyncio.get_event_loop().time()
-        logger.info("Health checker initialized")
+        self.start_time = time.time()
     
-    def set_services(self, db_manager=None, blockchain_monitor=None, bot=None, dp=None):
-        """Set service references for health checking."""
-        self.db_manager = db_manager
-        self.blockchain_monitor = blockchain_monitor
-        self.bot = bot
-        self.dp = dp
-    
-    def mark_startup_complete(self):
-        """Mark that startup is complete and health checks should be strict."""
-        self.startup_complete = True
-        self.startup_time = asyncio.get_event_loop().time()
-        logger.info("Health checker marked startup as complete")
-    
-    async def check_database(self) -> Dict[str, Any]:
-        """Check database connectivity."""
+    async def check_database(self, db_manager: Optional[DatabaseManager] = None) -> Dict[str, Any]:
+        """Check database connectivity and basic operations."""
         try:
-            if self.db_manager:
-                # Try to execute a simple query
-                async with self.db_manager.get_session() as session:
-                    await session.execute("SELECT 1")
-                return {"status": "healthy", "message": "Database connection successful"}
-            else:
-                return {"status": "unhealthy", "message": "Database manager not initialized"}
+            if not db_manager:
+                # Create a temporary database manager for health check
+                from database import get_db_manager
+                db_manager = await get_db_manager()
+            
+            # Test basic database connectivity
+            async with db_manager.get_session() as session:
+                # Simple query to test connection
+                result = await session.execute("SELECT 1 as test")
+                test_value = result.scalar()
+                
+                if test_value != 1:
+                    raise Exception("Database query returned unexpected result")
+            
+            return {
+                "status": "healthy",
+                "message": "Database connection successful",
+                "details": {
+                    "engine_pool_size": db_manager.engine.pool.size() if db_manager.engine else 0,
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
-            return {"status": "unhealthy", "message": f"Database error: {str(e)}"}
-    
-    async def check_blockchain_monitor(self) -> Dict[str, Any]:
-        """Check blockchain monitor status."""
-        try:
-            if self.blockchain_monitor:
-                # Check if the monitor is active
-                if hasattr(self.blockchain_monitor, 'is_running'):
-                    is_running = self.blockchain_monitor.is_running
-                else:
-                    is_running = True  # Assume running if we can't check
-                
-                if is_running:
-                    return {"status": "healthy", "message": "Blockchain monitor is active"}
-                else:
-                    return {"status": "unhealthy", "message": "Blockchain monitor is not running"}
-            else:
-                return {"status": "unhealthy", "message": "Blockchain monitor not initialized"}
-        except Exception as e:
-            logger.error(f"Blockchain monitor health check failed: {e}")
-            return {"status": "unhealthy", "message": f"Blockchain monitor error: {str(e)}"}
-    
-    async def check_bot(self) -> Dict[str, Any]:
-        """Check bot status."""
-        try:
-            if self.bot:
-                # Try to get bot info
-                bot_info = await self.bot.get_me()
-                return {
-                    "status": "healthy", 
-                    "message": "Bot is running",
-                    "bot_id": bot_info.id,
-                    "bot_username": bot_info.username
-                }
-            else:
-                return {"status": "unhealthy", "message": "Bot not initialized"}
-        except Exception as e:
-            logger.error(f"Bot health check failed: {e}")
-            return {"status": "unhealthy", "message": f"Bot error: {str(e)}"}
-    
-    async def check_dispatcher(self) -> Dict[str, Any]:
-        """Check dispatcher status."""
-        try:
-            if self.dp:
-                return {"status": "healthy", "message": "Dispatcher is running"}
-            else:
-                return {"status": "unhealthy", "message": "Dispatcher not initialized"}
-        except Exception as e:
-            logger.error(f"Dispatcher health check failed: {e}")
-            return {"status": "unhealthy", "message": f"Dispatcher error: {str(e)}"}
-    
-    async def perform_health_check(self) -> Dict[str, Any]:
-        """Perform comprehensive health check."""
-        try:
-            # Run all health checks concurrently
-            db_check, blockchain_check, bot_check, dispatcher_check = await asyncio.gather(
-                self.check_database(),
-                self.check_blockchain_monitor(),
-                self.check_bot(),
-                self.check_dispatcher(),
-                return_exceptions=True
-            )
-            
-            # Handle any exceptions from health checks
-            if isinstance(db_check, Exception):
-                db_check = {"status": "unhealthy", "message": f"Database check error: {str(db_check)}"}
-            if isinstance(blockchain_check, Exception):
-                blockchain_check = {"status": "unhealthy", "message": f"Blockchain check error: {str(blockchain_check)}"}
-            if isinstance(bot_check, Exception):
-                bot_check = {"status": "unhealthy", "message": f"Bot check error: {str(bot_check)}"}
-            if isinstance(dispatcher_check, Exception):
-                dispatcher_check = {"status": "unhealthy", "message": f"Dispatcher check error: {str(dispatcher_check)}"}
-            
-            # Determine overall health
-            all_checks = [db_check, blockchain_check, bot_check, dispatcher_check]
-            overall_status = "healthy" if all(check["status"] == "healthy" for check in all_checks) else "unhealthy"
-            
-            # Calculate HTTP status code
-            http_status = 200 if overall_status == "healthy" else 503
-            
-            return {
-                "status": overall_status,
-                "timestamp": asyncio.get_event_loop().time(),
-                "services": {
-                    "database": db_check,
-                    "blockchain_monitor": blockchain_check,
-                    "bot": bot_check,
-                    "dispatcher": dispatcher_check
-                },
-                "http_status": http_status
-            }
-            
-        except Exception as e:
-            logger.error(f"Health check failed: {e}")
             return {
                 "status": "unhealthy",
-                "timestamp": asyncio.get_event_loop().time(),
-                "error": str(e),
-                "http_status": 500
+                "message": f"Database connection failed: {str(e)}",
+                "details": {
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
             }
+    
+    async def check_bot(self, bot: Optional[Bot] = None) -> Dict[str, Any]:
+        """Check Telegram bot connectivity and API access."""
+        try:
+            if not bot:
+                # Create a temporary bot instance for health check
+                bot = Bot(token=config.BOT_TOKEN)
+            
+            # Test bot API connectivity
+            bot_info = await bot.get_me()
+            
+            # Clean up temporary bot
+            if not bot:
+                await bot.session.close()
+            
+            return {
+                "status": "healthy",
+                "message": "Bot API connection successful",
+                "details": {
+                    "bot_username": bot_info.username,
+                    "bot_id": bot_info.id,
+                    "can_join_groups": bot_info.can_join_groups,
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        
+        except TelegramAPIError as e:
+            logger.error(f"Bot health check failed with Telegram API error: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Bot API error: {str(e)}",
+                "details": {
+                    "error_type": "TelegramAPIError",
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        except Exception as e:
+            logger.error(f"Bot health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Bot connection failed: {str(e)}",
+                "details": {
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+    
+    async def check_tatum_api(self) -> Dict[str, Any]:
+        """Check Tatum API connectivity."""
+        try:
+            headers = {
+                "x-api-key": config.TATUM_API_KEY,
+                "Content-Type": "application/json"
+            }
+            
+            # Test Tatum API with a simple status call
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    "https://api.tatum.io/v3/tatum/usage",
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    usage_data = response.json()
+                    return {
+                        "status": "healthy",
+                        "message": "Tatum API connection successful",
+                        "details": {
+                            "plan": usage_data.get("plan", "unknown"),
+                            "credit_limit": usage_data.get("creditLimit", 0),
+                            "credits_consumed": usage_data.get("creditsConsumed", 0),
+                            "checked_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                else:
+                    return {
+                        "status": "unhealthy",
+                        "message": f"Tatum API returned status {response.status_code}",
+                        "details": {
+                            "status_code": response.status_code,
+                            "response": response.text[:200],
+                            "checked_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+        
+        except httpx.TimeoutException:
+            logger.error("Tatum API health check timed out")
+            return {
+                "status": "unhealthy",
+                "message": "Tatum API connection timed out",
+                "details": {
+                    "error": "timeout",
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        except Exception as e:
+            logger.error(f"Tatum API health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Tatum API connection failed: {str(e)}",
+                "details": {
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+    
+    async def check_blockchain_monitor(self, blockchain_monitor=None) -> Dict[str, Any]:
+        """Check blockchain monitor status."""
+        try:
+            if not blockchain_monitor:
+                return {
+                    "status": "warning",
+                    "message": "Blockchain monitor not available for health check",
+                    "details": {
+                        "checked_at": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+            
+            # Check if monitor is properly initialized
+            if hasattr(blockchain_monitor, 'tatum_client') and blockchain_monitor.tatum_client:
+                return {
+                    "status": "healthy",
+                    "message": "Blockchain monitor active",
+                    "details": {
+                        "network": config.BLOCKCHAIN_NETWORK,
+                        "contract_address": config.TOKEN_CONTRACT_ADDRESS,
+                        "checked_at": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+            else:
+                return {
+                    "status": "unhealthy",
+                    "message": "Blockchain monitor not properly initialized",
+                    "details": {
+                        "checked_at": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+        
+        except Exception as e:
+            logger.error(f"Blockchain monitor health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Blockchain monitor check failed: {str(e)}",
+                "details": {
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+    
+    def check_configuration(self) -> Dict[str, Any]:
+        """Check application configuration."""
+        try:
+            # Validate configuration
+            config.validate()
+            
+            return {
+                "status": "healthy",
+                "message": "Configuration valid",
+                "details": {
+                    "environment": config.ENVIRONMENT,
+                    "port": config.PORT,
+                    "blockchain_network": config.BLOCKCHAIN_NETWORK,
+                    "has_bot_token": bool(config.BOT_TOKEN),
+                    "has_database_url": bool(config.DATABASE_URL),
+                    "has_tatum_api_key": bool(config.TATUM_API_KEY),
+                    "has_contract_address": bool(config.TOKEN_CONTRACT_ADDRESS),
+                    "admin_users_count": len(config.ADMIN_USER_IDS),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Configuration validation failed: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Configuration invalid: {str(e)}",
+                "details": {
+                    "error": str(e),
+                    "checked_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+    
+    async def comprehensive_health_check(
+        self,
+        bot: Optional[Bot] = None,
+        db_manager: Optional[DatabaseManager] = None,
+        blockchain_monitor=None
+    ) -> Dict[str, Any]:
+        """Perform comprehensive health check of all components."""
+        health_results = {
+            "overall_status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "uptime_seconds": int(time.time() - self.start_time),
+            "checks": {}
+        }
+        
+        # Run all health checks concurrently
+        try:
+            tasks = {
+                "configuration": asyncio.create_task(
+                    asyncio.to_thread(self.check_configuration)
+                ),
+                "database": asyncio.create_task(
+                    self.check_database(db_manager)
+                ),
+                "bot": asyncio.create_task(
+                    self.check_bot(bot)
+                ),
+                "tatum_api": asyncio.create_task(
+                    self.check_tatum_api()
+                ),
+                "blockchain_monitor": asyncio.create_task(
+                    self.check_blockchain_monitor(blockchain_monitor)
+                )
+            }
+            
+            # Wait for all checks to complete
+            for check_name, task in tasks.items():
+                try:
+                    result = await task
+                    health_results["checks"][check_name] = result
+                    
+                    # Update overall status based on individual checks
+                    if result["status"] == "unhealthy":
+                        health_results["overall_status"] = "unhealthy"
+                    elif result["status"] == "warning" and health_results["overall_status"] == "healthy":
+                        health_results["overall_status"] = "warning"
+                
+                except Exception as e:
+                    logger.error(f"Health check '{check_name}' failed: {e}")
+                    health_results["checks"][check_name] = {
+                        "status": "unhealthy",
+                        "message": f"Health check failed: {str(e)}",
+                        "details": {
+                            "error": str(e),
+                            "checked_at": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                    health_results["overall_status"] = "unhealthy"
+        
+        except Exception as e:
+            logger.error(f"Comprehensive health check failed: {e}")
+            health_results["overall_status"] = "unhealthy"
+            health_results["error"] = str(e)
+        
+        return health_results
 
 
 # Global health checker instance
 health_checker = HealthChecker()
 
 
-async def health_check_handler(request):
-    """HTTP handler for health check endpoint."""
+async def quick_health_check() -> Dict[str, Any]:
+    """Quick health check for basic readiness probe."""
     try:
-        # Perform health check
-        health_result = await health_checker.perform_health_check()
+        # Just check configuration and return basic status
+        config_check = health_checker.check_configuration()
         
-        # Set appropriate HTTP status
-        status = health_result.get("http_status", 200)
-        
-        # Return JSON response
-        return web.json_response(
-            health_result,
-            status=status,
-            headers={
-                "Content-Type": "application/json",
-                "Cache-Control": "no-cache, no-store, must-revalidate"
+        if config_check["status"] == "healthy":
+            return {
+                "status": "healthy",
+                "message": "Service is ready",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "uptime_seconds": int(time.time() - health_checker.start_time)
             }
-        )
-        
-    except Exception as e:
-        logger.error(f"Health check handler error: {e}")
-        return web.json_response(
-            {
+        else:
+            return {
                 "status": "unhealthy",
-                "error": "Health check failed",
-                "message": str(e)
-            },
-            status=500
-        )
-
-
-async def simple_health_check(request):
-    """Simple health check that just returns OK."""
-    return web.Response(
-        text="OK",
-        status=200,
-        headers={
-            "Content-Type": "text/plain",
-            "Cache-Control": "no-cache, no-store, must-revalidate"
+                "message": "Service configuration invalid",
+                "details": config_check,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+    
+    except Exception as e:
+        logger.error(f"Quick health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "message": f"Health check failed: {str(e)}",
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
-    )
 
 
-async def immediate_health_check(request):
-    """Immediate health check that responds instantly without checking services."""
-    try:
-        # Calculate uptime
-        uptime = asyncio.get_event_loop().time() - health_checker.app_start_time
-        startup_status = "STARTUP_COMPLETE" if health_checker.startup_complete else "STARTING_UP"
+if __name__ == "__main__":
+    """Run health checks from command line."""
+    import sys
+    
+    async def main():
+        print("Running comprehensive health check...")
+        result = await health_checker.comprehensive_health_check()
         
-        response_text = f"RUNNING\nUptime: {uptime:.1f}s\nStatus: {startup_status}"
+        print(f"\nOverall Status: {result['overall_status']}")
+        print(f"Timestamp: {result['timestamp']}")
+        print(f"Uptime: {result['uptime_seconds']} seconds")
         
-        return web.Response(
-            text=response_text,
-            status=200,
-            headers={
-                "Content-Type": "text/plain",
-                "Cache-Control": "no-cache, no-store, must-revalidate"
-            }
-        )
-    except Exception as e:
-        logger.error(f"Immediate health check failed: {e}")
-        return web.Response(
-            text="ERROR",
-            status=500,
-            headers={
-                "Content-Type": "text/plain",
-                "Cache-Control": "no-cache, no-store, must-revalidate"
-            }
-        )
-
-
-async def readiness_check(request):
-    """Readiness check that verifies the application is ready to serve requests."""
-    try:
-        # Check if basic services are available
-        if health_checker.db_manager and health_checker.bot:
-            return web.Response(
-                text="READY",
-                status=200,
-                headers={
-                    "Content-Type": "text/plain",
-                    "Cache-Control": "no-cache, no-store, must-revalidate"
-                }
-            )
+        print("\nDetailed Results:")
+        for check_name, check_result in result.get("checks", {}).items():
+            status = check_result["status"]
+            message = check_result["message"]
+            print(f"  {check_name}: {status} - {message}")
+        
+        # Exit with error code if unhealthy
+        if result["overall_status"] == "unhealthy":
+            sys.exit(1)
         else:
-            return web.Response(
-                text="NOT_READY",
-                status=503,
-                headers={
-                    "Content-Type": "text/plain",
-                    "Cache-Control": "no-cache, no-store, must-revalidate"
-                }
-            )
-    except Exception as e:
-        logger.error(f"Readiness check failed: {e}")
-        return web.Response(
-            text="NOT_READY",
-            status=503,
-            headers={
-                "Content-Type": "text/plain",
-                "Cache-Control": "no-cache, no-store, must-revalidate"
-            }
-        )
-
-
-async def startup_health_check(request):
-    """Health check that's more lenient during startup."""
-    try:
-        if health_checker.startup_complete:
-            # Startup is complete, do a full health check
-            health_result = await health_checker.perform_health_check()
-            status = health_result.get("http_status", 200)
-            
-            return web.json_response(
-                health_result,
-                status=status,
-                headers={
-                    "Content-Type": "application/json",
-                    "Cache-Control": "no-cache, no-store, must-revalidate"
-                }
-            )
-        else:
-            # Still starting up, return startup status
-            return web.Response(
-                text="STARTING_UP",
-                status=200,
-                headers={
-                    "Content-Type": "text/plain",
-                    "Cache-Control": "no-cache, no-store, must-revalidate"
-                }
-            )
-    except Exception as e:
-        logger.error(f"Startup health check failed: {e}")
-        return web.Response(
-            text="ERROR",
-            status=500,
-            headers={
-                "Content-Type": "text/plain",
-                "Cache-Control": "no-cache, no-store, must-revalidate"
-            }
-        )
-
-
-def setup_health_routes(app: web.Application):
-    """Setup health check routes on the application."""
-    app.router.add_get('/health', immediate_health_check)  # Immediate response for Railway
-    app.router.add_get('/health/startup', startup_health_check)  # Startup-aware health check
-    app.router.add_get('/health/full', health_check_handler)  # Full health check
-    app.router.add_get('/health/simple', simple_health_check)
-    app.router.add_get('/health/ready', readiness_check)
-    app.router.add_get('/', immediate_health_check)  # Root endpoint also serves as health check
-
-
-def set_health_checker_services(db_manager=None, blockchain_monitor=None, bot=None, dp=None):
-    """Set services for the global health checker."""
-    health_checker.set_services(db_manager, blockchain_monitor, bot, dp)
+            sys.exit(0)
+    
+    # Run the health check
+    asyncio.run(main())

@@ -1,4 +1,15 @@
-"""Main application entry point."""
+"""Main application entry point.
+
+Health Check Endpoints:
+- /health - Comprehensive health check of all components (database, bot, APIs, etc.)
+- /ready - Quick readiness check for container startup
+- /healthz - Kubernetes-style readiness probe (same as /ready)
+
+The health check endpoints return:
+- HTTP 200 when healthy
+- HTTP 503 when unhealthy
+- JSON response with detailed status information
+"""
 
 import asyncio
 import logging
@@ -14,7 +25,7 @@ from bot import create_bot, create_dispatcher
 from database import get_db_manager
 from blockchain import BlockchainMonitor
 from config import config
-from healthcheck import setup_health_routes, set_health_checker_services
+from healthcheck import health_checker, quick_health_check
 
 # Configure logging
 logging.basicConfig(
@@ -64,15 +75,6 @@ async def lifespan_context():
         )
         logger.info("Blockchain monitoring started")
         
-        # Set services for health checker
-        set_health_checker_services(
-            db_manager=db_manager,
-            blockchain_monitor=blockchain_monitor,
-            bot=bot,
-            dp=dp
-        )
-        logger.info("Health checker services configured")
-        
         yield {
             'bot': bot,
             'dp': dp,
@@ -116,15 +118,62 @@ async def webhook_handler(request):
         return web.Response(status=500)
 
 
+async def health_check(request):
+    """Health check endpoint with real status checks."""
+    try:
+        # Get application context
+        bot = request.app.get('bot')
+        db_manager = request.app.get('db_manager')
+        blockchain_monitor = request.app.get('blockchain_monitor')
+        
+        # Perform comprehensive health check
+        health_result = await health_checker.comprehensive_health_check(
+            bot=bot,
+            db_manager=db_manager,
+            blockchain_monitor=blockchain_monitor
+        )
+        
+        # Return appropriate HTTP status based on health
+        status_code = 200 if health_result['overall_status'] == 'healthy' else 503
+        
+        return web.json_response(health_result, status=status_code)
+        
+    except Exception as e:
+        logger.error(f"Health check endpoint failed: {e}")
+        return web.json_response({
+            'status': 'unhealthy',
+            'message': f'Health check failed: {str(e)}',
+            'timestamp': None
+        }, status=503)
 
+
+async def readiness_check(request):
+    """Readiness check endpoint for quick probes."""
+    try:
+        # Quick health check for readiness
+        health_result = await quick_health_check()
+        
+        # Return appropriate HTTP status
+        status_code = 200 if health_result['status'] == 'healthy' else 503
+        
+        return web.json_response(health_result, status=status_code)
+        
+    except Exception as e:
+        logger.error(f"Readiness check endpoint failed: {e}")
+        return web.json_response({
+            'status': 'unhealthy',
+            'message': f'Readiness check failed: {str(e)}'
+        }, status=503)
 
 
 async def create_app():
     """Create and configure the web application."""
     app = web.Application()
     
-    # Setup health check routes
-    setup_health_routes(app)
+    # Add health check endpoints
+    app.router.add_get('/health', health_check)
+    app.router.add_get('/ready', readiness_check)
+    app.router.add_get('/healthz', readiness_check)  # Common Kubernetes readiness probe path
     
     # Add webhook endpoint
     app.router.add_post('/webhook', webhook_handler)
@@ -162,9 +211,11 @@ async def run_webhook():
         # Create web application
         app = await create_app()
         
-        # Store bot and dispatcher in app context
+        # Store bot, dispatcher, and other components in app context
         app['bot'] = bot
         app['dp'] = dp
+        app['db_manager'] = context['db_manager']
+        app['blockchain_monitor'] = context['blockchain_monitor']
         
         logger.info("Starting bot in webhook mode...")
         
@@ -186,17 +237,6 @@ async def run_webhook():
         await site.start()
         
         logger.info(f"Web server started on port {config.PORT}")
-        
-        # Add a configurable delay to ensure all services are ready
-        startup_delay = config.STARTUP_DELAY
-        logger.info(f"Waiting {startup_delay} seconds for services to stabilize...")
-        await asyncio.sleep(startup_delay)
-        
-        # Mark startup as complete for health checks
-        from healthcheck import health_checker
-        health_checker.mark_startup_complete()
-        
-        logger.info("All services initialized, health checks are now active")
         
         try:
             # Keep the server running
