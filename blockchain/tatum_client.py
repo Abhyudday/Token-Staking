@@ -38,19 +38,36 @@ class TatumClient:
             "ethereum-sepolia": "ethereum",
             "polygon-mainnet": "polygon",
             "bsc-mainnet": "bsc",
-            "bsc-testnet": "bsc"
+            "bsc-testnet": "bsc",
+            "solana-mainnet": "solana",
+            "solana-devnet": "solana",
+            "solana-testnet": "solana"
         }
         return network_map.get(self.network, "ethereum")
+    
+    def _is_solana_network(self) -> bool:
+        """Check if the current network is Solana."""
+        return self.network.startswith("solana")
     
     async def get_token_balance(self, wallet_address: str) -> Optional[float]:
         """Get token balance for a wallet address."""
         try:
-            network_prefix = self._get_network_prefix()
-            url = f"{self.base_url}/{network_prefix}/account/balance/{wallet_address}"
-            
-            params = {
-                "contractAddress": self.token_address
-            }
+            if self._is_solana_network():
+                # Use Solana-specific endpoint for token balance
+                url = f"{self.base_url}/solana/account/balance/{wallet_address}"
+                
+                # For Solana, we need to specify the token mint address
+                params = {
+                    "mint": self.token_address
+                }
+            else:
+                # Use Ethereum-style endpoint
+                network_prefix = self._get_network_prefix()
+                url = f"{self.base_url}/{network_prefix}/account/balance/{wallet_address}"
+                
+                params = {
+                    "contractAddress": self.token_address
+                }
             
             response = await self.client.get(url, params=params)
             response.raise_for_status()
@@ -80,18 +97,34 @@ class TatumClient:
     ) -> List[Dict[str, Any]]:
         """Get token transactions for a wallet address."""
         try:
-            network_prefix = self._get_network_prefix()
-            url = f"{self.base_url}/{network_prefix}/account/transaction/{wallet_address}"
-            
-            params = {
-                "contractAddress": self.token_address,
-                "pageSize": 50
-            }
-            
-            if from_block:
-                params["from"] = from_block
-            if to_block:
-                params["to"] = to_block
+            if self._is_solana_network():
+                # Use Solana-specific endpoint for transactions
+                url = f"{self.base_url}/solana/account/transaction/{wallet_address}"
+                
+                params = {
+                    "mint": self.token_address,
+                    "pageSize": 50
+                }
+                
+                # Solana uses slot numbers instead of block numbers
+                if from_block:
+                    params["fromSlot"] = from_block
+                if to_block:
+                    params["toSlot"] = to_block
+            else:
+                # Use Ethereum-style endpoint
+                network_prefix = self._get_network_prefix()
+                url = f"{self.base_url}/{network_prefix}/account/transaction/{wallet_address}"
+                
+                params = {
+                    "contractAddress": self.token_address,
+                    "pageSize": 50
+                }
+                
+                if from_block:
+                    params["from"] = from_block
+                if to_block:
+                    params["to"] = to_block
             
             response = await self.client.get(url, params=params)
             response.raise_for_status()
@@ -204,17 +237,29 @@ class TatumClient:
             return False
     
     async def get_latest_block_number(self) -> Optional[int]:
-        """Get the latest block number."""
+        """Get the latest block number or slot number."""
         try:
-            network_prefix = self._get_network_prefix()
-            url = f"{self.base_url}/{network_prefix}/web3/{self.api_key}"
-            
-            payload = {
-                "jsonrpc": "2.0",
-                "method": "eth_blockNumber",
-                "params": [],
-                "id": 1
-            }
+            if self._is_solana_network():
+                # Use Solana-specific endpoint for latest slot
+                url = f"{self.base_url}/solana/web3/{self.api_key}"
+                
+                payload = {
+                    "jsonrpc": "2.0",
+                    "method": "getSlot",
+                    "params": [],
+                    "id": 1
+                }
+            else:
+                # Use Ethereum-style endpoint
+                network_prefix = self._get_network_prefix()
+                url = f"{self.base_url}/{network_prefix}/web3/{self.api_key}"
+                
+                payload = {
+                    "jsonrpc": "2.0",
+                    "method": "eth_blockNumber",
+                    "params": [],
+                    "id": 1
+                }
             
             response = await self.client.post(url, json=payload)
             response.raise_for_status()
@@ -222,27 +267,43 @@ class TatumClient:
             data = response.json()
             
             if "result" in data:
-                return int(data["result"], 16)  # Convert from hex
+                if self._is_solana_network():
+                    return int(data["result"])  # Solana returns decimal
+                else:
+                    return int(data["result"], 16)  # Ethereum returns hex
             
             return None
             
         except Exception as e:
-            logger.error(f"Error getting latest block number: {e}")
+            logger.error(f"Error getting latest block/slot number: {e}")
             return None
     
     async def monitor_token_holders(self, start_block: Optional[int] = None) -> List[Dict[str, Any]]:
         """Monitor for new token holders and transactions."""
         try:
-            # Get recent transactions for the token contract
-            network_prefix = self._get_network_prefix()
-            url = f"{self.base_url}/{network_prefix}/transaction/address/{self.token_address}"
-            
-            params = {
-                "pageSize": 50
-            }
-            
-            if start_block:
-                params["from"] = start_block
+            if self._is_solana_network():
+                # Use Solana-specific endpoint for token transactions
+                url = f"{self.base_url}/solana/transaction/address/{self.token_address}"
+                
+                params = {
+                    "mint": self.token_address,
+                    "pageSize": 50
+                }
+                
+                # Solana uses slot numbers
+                if start_block:
+                    params["fromSlot"] = start_block
+            else:
+                # Use Ethereum-style endpoint
+                network_prefix = self._get_network_prefix()
+                url = f"{self.base_url}/{network_prefix}/transaction/address/{self.token_address}"
+                
+                params = {
+                    "pageSize": 50
+                }
+                
+                if start_block:
+                    params["from"] = start_block
             
             response = await self.client.get(url, params=params)
             response.raise_for_status()
@@ -252,23 +313,44 @@ class TatumClient:
             
             if isinstance(data, list):
                 for tx in data:
-                    if "tokenTransfers" in tx:
-                        for transfer in tx["tokenTransfers"]:
-                            if transfer.get("contractAddress", "").lower() == self.token_address.lower():
-                                # Extract holder information
-                                to_address = transfer.get("to", "")
-                                amount = float(transfer.get("amount", 0)) / (10 ** 18)
-                                
-                                if to_address and amount > 0:
-                                    new_holders.append({
-                                        "wallet_address": to_address,
-                                        "amount": amount,
-                                        "transaction_hash": tx.get("hash", ""),
-                                        "block_number": int(tx.get("blockNumber", 0)),
-                                        "timestamp": datetime.fromtimestamp(
-                                            tx.get("blockTime", 0), tz=timezone.utc
-                                        ) if tx.get("blockTime") else None
-                                    })
+                    if self._is_solana_network():
+                        # Parse Solana transaction format
+                        if "tokenTransfers" in tx:
+                            for transfer in tx["tokenTransfers"]:
+                                if transfer.get("mint", "").lower() == self.token_address.lower():
+                                    # Extract holder information for Solana
+                                    to_address = transfer.get("to", "")
+                                    amount = float(transfer.get("amount", 0)) / (10 ** 9)  # Solana uses 9 decimals
+                                    
+                                    if to_address and amount > 0:
+                                        new_holders.append({
+                                            "wallet_address": to_address,
+                                            "amount": amount,
+                                            "transaction_hash": tx.get("signature", ""),
+                                            "block_number": int(tx.get("slot", 0)),
+                                            "timestamp": datetime.fromtimestamp(
+                                                tx.get("blockTime", 0), tz=timezone.utc
+                                            ) if tx.get("blockTime") else None
+                                        })
+                    else:
+                        # Parse Ethereum transaction format
+                        if "tokenTransfers" in tx:
+                            for transfer in tx["tokenTransfers"]:
+                                if transfer.get("contractAddress", "").lower() == self.token_address.lower():
+                                    # Extract holder information for Ethereum
+                                    to_address = transfer.get("to", "")
+                                    amount = float(transfer.get("amount", 0)) / (10 ** 18)  # Ethereum uses 18 decimals
+                                    
+                                    if to_address and amount > 0:
+                                        new_holders.append({
+                                            "wallet_address": to_address,
+                                            "amount": amount,
+                                            "transaction_hash": tx.get("hash", ""),
+                                            "block_number": int(tx.get("blockNumber", 0)),
+                                            "timestamp": datetime.fromtimestamp(
+                                                tx.get("blockTime", 0), tz=timezone.utc
+                                            ) if tx.get("blockTime") else None
+                                        })
             
             return new_holders
             

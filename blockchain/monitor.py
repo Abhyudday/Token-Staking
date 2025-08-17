@@ -26,18 +26,19 @@ class BlockchainMonitor:
         try:
             self.db_manager = await get_db_manager()
             
-            # Get last checked block from database settings
-            last_block_str = await self.db_manager.get_setting("last_checked_block")
+            # Get last checked block/slot from database settings
+            setting_key = "last_checked_slot" if self.tatum._is_solana_network() else "last_checked_block"
+            last_block_str = await self.db_manager.get_setting(setting_key)
             if last_block_str:
                 self.last_checked_block = int(last_block_str)
             else:
-                # Start from current block
+                # Start from current block/slot
                 self.last_checked_block = await self.tatum.get_latest_block_number()
                 if self.last_checked_block:
                     await self.db_manager.set_setting(
-                        "last_checked_block", 
+                        setting_key, 
                         str(self.last_checked_block),
-                        "Last blockchain block checked for transactions"
+                        "Last blockchain block/slot checked for transactions"
                     )
         except Exception as e:
             logger.warning(f"Database initialization failed for blockchain monitor: {e}")
@@ -84,13 +85,14 @@ class BlockchainMonitor:
             for holder_data in new_holders:
                 await self.process_new_holder(holder_data)
             
-            # Update last checked block
+            # Update last checked block/slot
             self.last_checked_block = current_block
             if self.db_manager:
                 try:
-                    await self.db_manager.set_setting("last_checked_block", str(current_block))
+                    setting_key = "last_checked_slot" if self.tatum._is_solana_network() else "last_checked_block"
+                    await self.db_manager.set_setting(setting_key, str(current_block))
                 except Exception as e:
-                    logger.warning(f"Could not save last checked block to database: {e}")
+                    logger.warning(f"Could not save last checked block/slot to database: {e}")
             
             if new_holders:
                 logger.info(f"Processed {len(new_holders)} new transactions up to block {current_block}")
