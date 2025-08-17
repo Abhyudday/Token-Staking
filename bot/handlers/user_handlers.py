@@ -1,11 +1,10 @@
 """User handlers for the bot."""
 
 import logging
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram import Dispatcher, types
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher.filters import Text
 from typing import Optional
 
 from database import get_db_manager
@@ -23,15 +22,14 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-router = Router()
-
+# For aiogram 2.x, we'll use the dispatcher directly instead of Router
+# The handlers will be registered in the main bot setup
 
 class WalletLinkStates(StatesGroup):
     waiting_for_wallet = State()
 
 
-@router.message(Command("start"))
-async def start_command(message: Message):
+async def start_command(message: types.Message):
     """Handle /start command."""
     try:
         welcome_msg = get_welcome_message()
@@ -45,8 +43,7 @@ async def start_command(message: Message):
         await message.answer("❌ Something went wrong. Please try again later.")
 
 
-@router.message(Command("help"))
-async def help_command(message: Message):
+async def help_command(message: types.Message):
     """Handle /help command."""
     try:
         help_msg = get_help_message()
@@ -60,52 +57,49 @@ async def help_command(message: Message):
         await message.answer("❌ Something went wrong. Please try again later.")
 
 
-@router.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: CallbackQuery):
+async def back_to_main(callback_query: types.CallbackQuery):
     """Handle back to main menu."""
     try:
         welcome_msg = get_welcome_message()
-        await callback.message.edit_text(
+        await callback_query.message.edit_text(
             welcome_msg,
             reply_markup=get_main_keyboard(),
             parse_mode="Markdown"
         )
-        await callback.answer()
+        await callback_query.answer()
     except Exception as e:
         logger.error(f"Error in back to main: {e}")
-        await callback.answer("❌ Something went wrong.")
+        await callback_query.answer("❌ Something went wrong.")
 
 
-@router.callback_query(F.data == "help")
-async def help_callback(callback: CallbackQuery):
+async def help_callback(callback_query: types.CallbackQuery):
     """Handle help button callback."""
     try:
         help_msg = get_help_message()
-        await callback.message.edit_text(
+        await callback_query.message.edit_text(
             help_msg,
             reply_markup=get_back_keyboard(),
             parse_mode="Markdown"
         )
-        await callback.answer()
+        await callback_query.answer()
     except Exception as e:
         logger.error(f"Error in help callback: {e}")
-        await callback.answer("❌ Something went wrong.")
+        await callback_query.answer("❌ Something went wrong.")
 
 
-@router.callback_query(F.data == "check_status")
-async def check_status(callback: CallbackQuery):
+async def check_status(callback_query: types.CallbackQuery):
     """Handle check status callback."""
     try:
         db_manager = await get_db_manager()
-        holder = await db_manager.get_holder_by_telegram_id(callback.from_user.id)
+        holder = await db_manager.get_holder_by_telegram_id(callback_query.from_user.id)
         
         if not holder:
-            await callback.message.edit_text(
+            await callback_query.message.edit_text(
                 "❌ **Wallet Not Linked**\n\nPlease link your wallet address first to check your status!",
                 reply_markup=get_wallet_link_keyboard(),
                 parse_mode="Markdown"
             )
-            await callback.answer()
+            await callback_query.answer()
             return
         
         # Get detailed status from blockchain monitor
@@ -117,26 +111,25 @@ async def check_status(callback: CallbackQuery):
         
         await monitor.close()
         
-        await callback.message.edit_text(
+        await callback_query.message.edit_text(
             status_msg,
             reply_markup=get_refresh_keyboard("check_status"),
             parse_mode="Markdown"
         )
-        await callback.answer()
+        await callback_query.answer()
         
     except Exception as e:
         logger.error(f"Error checking status: {e}")
-        await callback.answer("❌ Error checking status. Please try again.")
+        await callback_query.answer("❌ Error checking status. Please try again.")
 
 
-@router.callback_query(F.data.startswith("leaderboard"))
-async def leaderboard(callback: CallbackQuery):
+async def leaderboard(callback_query: types.CallbackQuery):
     """Handle leaderboard callback."""
     try:
         # Parse page number from callback data
         page = 0
-        if ":" in callback.data:
-            page = int(callback.data.split(":")[1])
+        if ":" in callback_query.data:
+            page = int(callback_query.data.split(":")[1])
         
         db_manager = await get_db_manager()
         
@@ -151,12 +144,12 @@ async def leaderboard(callback: CallbackQuery):
         total_pages = (len(leaderboard_data) + per_page - 1) // per_page
         
         if not page_data:
-            await callback.message.edit_text(
+            await callback_query.message.edit_text(
                 "📊 **Leaderboard**\n\nNo holders found yet!",
                 reply_markup=get_back_keyboard(),
                 parse_mode="Markdown"
             )
-            await callback.answer()
+            await callback_query.answer()
             return
         
         # Format leaderboard message
@@ -175,27 +168,26 @@ async def leaderboard(callback: CallbackQuery):
         
         leaderboard_msg += f"📄 Page {page + 1} of {total_pages}"
         
-        await callback.message.edit_text(
+        await callback_query.message.edit_text(
             truncate_text(leaderboard_msg),
             reply_markup=get_leaderboard_keyboard(page, total_pages),
             parse_mode="Markdown"
         )
-        await callback.answer()
+        await callback_query.answer()
         
     except Exception as e:
         logger.error(f"Error showing leaderboard: {e}")
-        await callback.answer("❌ Error loading leaderboard. Please try again.")
+        await callback_query.answer("❌ Error loading leaderboard. Please try again.")
 
 
-@router.callback_query(F.data == "my_rank")
-async def my_rank(callback: CallbackQuery):
+async def my_rank(callback_query: types.CallbackQuery):
     """Handle my rank callback."""
     try:
         db_manager = await get_db_manager()
-        holder = await db_manager.get_holder_by_telegram_id(callback.from_user.id)
+        holder = await db_manager.get_holder_by_telegram_id(callback_query.from_user.id)
         
         if not holder:
-            await callback.answer("❌ Please link your wallet first!", show_alert=True)
+            await callback_query.answer("❌ Please link your wallet first!", show_alert=True)
             return
         
         rank = await db_manager.get_holder_rank(holder.id)
@@ -206,18 +198,17 @@ async def my_rank(callback: CallbackQuery):
         else:
             msg = "❌ Unable to determine your rank. Make sure you have tokens!"
         
-        await callback.answer(msg, show_alert=True)
+        await callback_query.answer(msg, show_alert=True)
         
     except Exception as e:
         logger.error(f"Error getting user rank: {e}")
-        await callback.answer("❌ Error getting rank. Please try again.", show_alert=True)
+        await callback_query.answer("❌ Error getting rank. Please try again.", show_alert=True)
 
 
-@router.callback_query(F.data == "link_wallet")
-async def link_wallet(callback: CallbackQuery, state: FSMContext):
+async def link_wallet(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle link wallet callback."""
     try:
-        await callback.message.edit_text(
+        await callback_query.message.edit_text(
             "🔗 **Link Your Wallet**\n\n"
             "Please send your wallet address to start tracking your token holdings.\n\n"
             "📝 **Example:** `0x1234567890abcdef...`\n\n"
@@ -227,15 +218,14 @@ async def link_wallet(callback: CallbackQuery, state: FSMContext):
         )
         
         await state.set_state(WalletLinkStates.waiting_for_wallet)
-        await callback.answer()
+        await callback_query.answer()
         
     except Exception as e:
         logger.error(f"Error in link wallet: {e}")
-        await callback.answer("❌ Something went wrong.")
+        await callback_query.answer("❌ Something went wrong.")
 
 
-@router.message(StateFilter(WalletLinkStates.waiting_for_wallet))
-async def process_wallet_address(message: Message, state: FSMContext):
+async def process_wallet_address(message: types.Message, state: FSMContext):
     """Process wallet address input."""
     try:
         wallet_address = message.text.strip()
@@ -327,36 +317,32 @@ async def process_wallet_address(message: Message, state: FSMContext):
         await state.clear()
 
 
-@router.callback_query(F.data == "leaderboard_info")
-async def leaderboard_info(callback: CallbackQuery):
+async def leaderboard_info(callback_query: types.CallbackQuery):
     """Handle leaderboard info callback."""
-    await callback.answer(
+    await callback_query.answer(
         "📊 Leaderboard shows top token holders ranked by balance. "
         "✅ = Eligible for rewards, ⏳ = Still building eligibility",
         show_alert=True
     )
 
 
-@router.callback_query(F.data == "transaction_info")
-async def transaction_info(callback: CallbackQuery):
+async def transaction_info(callback_query: types.CallbackQuery):
     """Handle transaction info callback."""
-    await callback.answer(
+    await callback_query.answer(
         "📈 Transaction history shows all buy/sell activities for this wallet.",
         show_alert=True
     )
 
 
-@router.callback_query(F.data == "winners_info")
-async def winners_info(callback: CallbackQuery):
+async def winners_info(callback_query: types.CallbackQuery):
     """Handle winners info callback."""
-    await callback.answer(
+    await callback_query.answer(
         "🏆 Recent winners of monthly rewards. Winners are selected randomly from eligible holders.",
         show_alert=True
     )
 
 
-@router.message()
-async def unknown_message(message: Message):
+async def unknown_message(message: types.Message):
     """Handle unknown messages."""
     try:
         await message.answer(
@@ -369,7 +355,6 @@ async def unknown_message(message: Message):
 
 
 # Error handler for this router
-@router.error()
 async def error_handler(event, exception):
     """Handle errors in user handlers."""
     logger.error(f"Error in user handlers: {exception}")

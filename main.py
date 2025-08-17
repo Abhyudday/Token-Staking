@@ -54,6 +54,29 @@ async def test_endpoint(request):
         logger.error(f"Error in test endpoint: {e}")
         return web.Response(text="Server is running", status=200)
 
+async def webhook_handler(request):
+    """Handle Telegram webhook updates."""
+    try:
+        if not app_ready:
+            return web.Response(text="Bot not ready yet", status=503)
+        
+        # Get bot and dispatcher from app context
+        bot = request.app.get('bot')
+        dp = request.app.get('dp')
+        
+        if not bot or not dp:
+            return web.Response(text="Bot not initialized", status=503)
+        
+        # Process the webhook update
+        update = await request.json()
+        await dp.process_update(update)
+        
+        return web.Response(text="ok", status=200)
+        
+    except Exception as e:
+        logger.error(f"Error handling webhook: {e}")
+        return web.Response(text="Error", status=500)
+
 def create_minimal_app():
     """Create minimal web application with just health endpoints."""
     app = web.Application()
@@ -77,6 +100,9 @@ def create_minimal_app():
     
     # Add test endpoint
     app.router.add_get('/test', test_endpoint)
+    
+    # Add webhook endpoint
+    app.router.add_post('/webhook', webhook_handler)
     
     return app
 
