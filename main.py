@@ -107,99 +107,12 @@ async def webhook_handler(request):
 
 
 async def health_check(request):
-    """Health check endpoint with comprehensive status checks."""
-    try:
-        health_status = {
-            'status': 'healthy',
-            'timestamp': asyncio.get_event_loop().time(),
-            'checks': {}
-        }
-        
-        # Check bot status
-        try:
-            bot = request.app.get('bot')
-            if bot and hasattr(bot, 'session') and not bot.session.closed:
-                # Try a simple API call to verify bot connectivity
-                me = await bot.get_me()
-                health_status['checks']['bot'] = {
-                    'status': 'healthy',
-                    'username': me.username,
-                    'message': 'Bot is connected and responsive'
-                }
-            else:
-                health_status['checks']['bot'] = {
-                    'status': 'unhealthy',
-                    'message': 'Bot instance not available or session closed'
-                }
-                health_status['status'] = 'degraded'
-        except Exception as e:
-            health_status['checks']['bot'] = {
-                'status': 'unhealthy',
-                'message': f'Bot check failed: {str(e)}'
-            }
-            health_status['status'] = 'degraded'
-        
-        # Check database status
-        try:
-            db_manager = request.app.get('db_manager')
-            if db_manager:
-                # Perform a simple database connectivity check
-                await db_manager.ping()
-                health_status['checks']['database'] = {
-                    'status': 'healthy',
-                    'message': 'Database connection is active'
-                }
-            else:
-                health_status['checks']['database'] = {
-                    'status': 'unhealthy',
-                    'message': 'Database manager not available'
-                }
-                health_status['status'] = 'degraded'
-        except Exception as e:
-            health_status['checks']['database'] = {
-                'status': 'unhealthy',
-                'message': f'Database check failed: {str(e)}'
-            }
-            health_status['status'] = 'degraded'
-        
-        # Check blockchain monitor status
-        try:
-            blockchain_monitor = request.app.get('blockchain_monitor')
-            if blockchain_monitor:
-                health_status['checks']['blockchain_monitor'] = {
-                    'status': 'healthy',
-                    'message': 'Blockchain monitor is active'
-                }
-            else:
-                health_status['checks']['blockchain_monitor'] = {
-                    'status': 'unhealthy',
-                    'message': 'Blockchain monitor not available'
-                }
-                health_status['status'] = 'degraded'
-        except Exception as e:
-            health_status['checks']['blockchain_monitor'] = {
-                'status': 'unhealthy',
-                'message': f'Blockchain monitor check failed: {str(e)}'
-            }
-            health_status['status'] = 'degraded'
-        
-        # Determine HTTP status code based on health
-        if health_status['status'] == 'healthy':
-            http_status = 200
-        elif health_status['status'] == 'degraded':
-            http_status = 200  # Still return 200 for degraded but functional
-        else:
-            http_status = 503  # Service Unavailable
-            
-        return web.json_response(health_status, status=http_status)
-        
-    except Exception as e:
-        logger.error(f"Health check endpoint error: {e}")
-        return web.json_response({
-            'status': 'unhealthy',
-            'message': f'Health check failed: {str(e)}',
-            'timestamp': asyncio.get_event_loop().time()
-        }, status=503)
+    """Health check endpoint."""
+    is_ready = request.app.get('is_ready', False)
+    return web.json_response({
+        'status': 'ok',
+        'ready': is_ready
+    })
 
 
 async def create_app():
@@ -237,49 +150,91 @@ async def run_polling():
 
 async def run_webhook():
     """Run bot in webhook mode (for production)."""
-    async with lifespan_context() as context:
-        bot = context['bot']
-        dp = context['dp']
-        monitoring_task = context['monitoring_task']
-        
-        # Create web application
-        app = await create_app()
-        
-        # Store bot, dispatcher, and other components in app context
-        app['bot'] = bot
-        app['dp'] = dp
-        app['db_manager'] = context['db_manager']
-        app['blockchain_monitor'] = context['blockchain_monitor']
-        
-        logger.info("Starting bot in webhook mode...")
-        
-        # Set webhook (you'll need to configure this with your Railway URL)
-        webhook_url = f"https://your-railway-app-url.railway.app/webhook"
-        
+    # Create web application and start server FIRST so /health is available immediately
+    app = await create_app()
+    app['is_ready'] = False
+
+    logger.info("Starting web server (health endpoint available immediately)...")
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', config.PORT)
+    await site.start()
+    logger.info(f"Web server started on port {config.PORT}")
+
+    async def initialize_services():
+        """Initialize dependencies without blocking health endpoint."""
         try:
-            await bot.set_webhook(webhook_url)
-            logger.info(f"Webhook set to: {webhook_url}")
+            # Validate configuration
+            config.validate()
+
+            # Initialize database
+            db_manager_local = await get_db_manager()
+            app['db_manager'] = db_manager_local
+
+            # Initialize blockchain monitor
+            blockchain_monitor_local = BlockchainMonitor()
+            await blockchain_monitor_local.initialize()
+            app['blockchain_monitor'] = blockchain_monitor_local
+
+            # Create bot and dispatcher
+            bot_local = create_bot()
+            dp_local = await create_dispatcher()
+            app['bot'] = bot_local
+            app['dp'] = dp_local
+
+            # Start blockchain monitoring in background
+            app['monitoring_task'] = asyncio.create_task(
+                blockchain_monitor_local.start_monitoring(interval_seconds=300)
+            )
+
+            # Set webhook (configure with your Railway public URL)
+            webhook_url = f"https://your-railway-app-url.railway.app/webhook"
+            try:
+                await bot_local.set_webhook(webhook_url)
+                logger.info(f"Webhook set to: {webhook_url}")
+            except Exception as e:
+                logger.warning(f"Could not set webhook: {e}")
+                logger.info("Continuing without webhook (polling fallback if enabled)")
+
+            # Mark app as ready
+            app['is_ready'] = True
+            logger.info("Service initialization completed; app is ready")
+
         except Exception as e:
-            logger.warning(f"Could not set webhook: {e}")
-            logger.info("Running without webhook (polling fallback)")
-        
-        # Start web server
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        site = web.TCPSite(runner, '0.0.0.0', config.PORT)
-        await site.start()
-        
-        logger.info(f"Web server started on port {config.PORT}")
-        
+            # Keep server running for health endpoint even if initialization fails
+            app['is_ready'] = False
+            logger.error(f"Service initialization failed: {e}")
+
+    async def shutdown_services():
+        """Cleanup resources on shutdown."""
         try:
-            # Keep the server running
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            logger.info("Server stopped by user")
-        finally:
-            monitoring_task.cancel()
-            await runner.cleanup()
+            monitoring_task = app.get('monitoring_task')
+            if monitoring_task:
+                monitoring_task.cancel()
+            blockchain_monitor_local = app.get('blockchain_monitor')
+            if blockchain_monitor_local:
+                await blockchain_monitor_local.close()
+            db_manager_local = app.get('db_manager')
+            if db_manager_local:
+                await db_manager_local.close()
+            bot_local = app.get('bot')
+            if bot_local:
+                await bot_local.session.close()
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}")
+
+    # Kick off initialization in the background
+    asyncio.create_task(initialize_services())
+
+    try:
+        # Keep the server running
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    finally:
+        await shutdown_services()
+        await runner.cleanup()
 
 
 def setup_signal_handlers():
