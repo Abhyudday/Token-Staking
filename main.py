@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 import signal
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -111,16 +112,28 @@ async def health_check(request):
     is_ready = request.app.get('is_ready', False)
     return web.json_response({
         'status': 'ok',
-        'ready': is_ready
+        'ready': is_ready,
+        'timestamp': str(datetime.now(timezone.utc))
     })
 
 
-async def create_app():
+async def test_endpoint(request):
+    """Simple test endpoint to verify server is running."""
+    return web.json_response({
+        'message': 'Server is running',
+        'timestamp': str(datetime.now(timezone.utc))
+    })
+
+
+def create_app():
     """Create and configure the web application."""
     app = web.Application()
     
     # Add health check endpoint
     app.router.add_get('/health', health_check)
+    
+    # Add test endpoint
+    app.router.add_get('/test', test_endpoint)
     
     # Add webhook endpoint
     app.router.add_post('/webhook', webhook_handler)
@@ -151,16 +164,21 @@ async def run_polling():
 async def run_webhook():
     """Run bot in webhook mode (for production)."""
     # Create web application and start server FIRST so /health is available immediately
-    app = await create_app()
+    app = create_app()
     app['is_ready'] = False
 
     logger.info("Starting web server (health endpoint available immediately)...")
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', config.PORT)
-    await site.start()
-    logger.info(f"Web server started on port {config.PORT}")
+    try:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', config.PORT)
+        await site.start()
+        logger.info(f"Web server started successfully on port {config.PORT}")
+        logger.info("Health endpoint /health is now accessible")
+    except Exception as e:
+        logger.error(f"Failed to start web server: {e}")
+        raise
 
     async def initialize_services():
         """Initialize dependencies without blocking health endpoint."""
