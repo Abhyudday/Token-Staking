@@ -1,64 +1,34 @@
-"""Configuration module for the Telegram rewards bot."""
-
 import os
-from typing import List
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class Config:
-    """Application configuration."""
-    
     # Telegram Bot Configuration
-    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-    ADMIN_USER_IDS: List[int] = [
-        int(user_id.strip()) 
-        for user_id in os.getenv("ADMIN_USER_IDS", "").split(",") 
-        if user_id.strip().isdigit()
-    ]
+    BOT_TOKEN = os.getenv('BOT_TOKEN')
     
-    # Database Configuration
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    # Database Configuration (Railway)
+    DATABASE_URL = os.getenv('DATABASE_URL')
     
-    # Tatum API Configuration (fallback)
-    TATUM_API_KEY: str = os.getenv("TATUM_API_KEY", "")
-    
-    # Bitquery API Configuration
-    BITQUERY_API_KEY: str = os.getenv("BITQUERY_API_KEY", "")
+    # SOLSCAN Pro API Configuration
+    SOLSCAN_API_KEY = os.getenv('SOLSCAN_API_KEY')
     
     # Token Configuration
-    TOKEN_CONTRACT_ADDRESS: str = os.getenv("TOKEN_CONTRACT_ADDRESS", "")
-    BLOCKCHAIN_NETWORK: str = os.getenv("BLOCKCHAIN_NETWORK", "ethereum-sepolia")
+    TOKEN_CONTRACT_ADDRESS = "9M7eYNNP4TdJCmMspKpdbEhvpdds6E5WFVTTLjXfVray"
     
-    # Application Settings
-    PORT: int = int(os.getenv("PORT", "8000"))
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    # Admin Configuration
+    ADMIN_USER_IDS = [int(id.strip()) for id in os.getenv('ADMIN_USER_IDS', '').split(',') if id.strip()]
     
-    # Holder Requirements
-    MINIMUM_HOLD_DAYS: int = 30
+    # Snapshot Configuration
+    MINIMUM_USD_THRESHOLD = float(os.getenv('MINIMUM_USD_THRESHOLD', '0'))
     
     @classmethod
-    def validate(cls) -> bool:
-        """Validate that all required configuration is present."""
-        required_vars = [
-            "BOT_TOKEN",
-            "DATABASE_URL",
-            "TOKEN_CONTRACT_ADDRESS"
-        ]
-        
-        # Check if either Bitquery or Tatum API key is provided
-        if not getattr(cls, "BITQUERY_API_KEY") and not getattr(cls, "TATUM_API_KEY"):
-            raise ValueError("Either BITQUERY_API_KEY or TATUM_API_KEY must be provided")
-        
-        missing_vars = []
-        for var in required_vars:
-            if not getattr(cls, var):
-                missing_vars.append(var)
+    def validate(cls):
+        """Validate that all required environment variables are set"""
+        required_vars = ['BOT_TOKEN', 'DATABASE_URL', 'SOLSCAN_API_KEY']
+        missing_vars = [var for var in required_vars if not getattr(cls, var)]
         
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
         return True
-
-# Create config instance
-config = Config()

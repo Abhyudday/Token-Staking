@@ -1,262 +1,159 @@
-"""Main application entry point."""
+#!/usr/bin/env python3
+"""
+Token Holder Bot - Main Entry Point
+
+This bot takes daily snapshots of Solana token holders and maintains a leaderboard
+based on how long each wallet has held tokens.
+
+Features:
+- Daily automated snapshots via SOLSCAN Pro API
+- PostgreSQL database storage (Railway)
+- Leaderboard ranking by days held
+- Admin panel for configuration
+- Minimum USD threshold filtering
+- Health check endpoints for Railway monitoring
+"""
 
 import asyncio
 import logging
-import sys
 import signal
+import sys
+import threading
 import os
-from datetime import datetime, timezone
-from contextlib import asynccontextmanager
+from telegram_bot import TokenHolderBot
+from scheduler import SnapshotScheduler
+from config import Config
+from healthcheck_server import run_health_server
 
-# Import aiohttp at the top level to avoid import issues
-from aiohttp import web
-
-# Configure basic logging first
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
+        logging.FileHandler('bot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
+
 logger = logging.getLogger(__name__)
 
-# Global flag to track if full app is ready
-app_ready = False
-# Global context for app components
-app_context_global = {}
-
-async def health_check(request):
-    """Health check endpoint - always available."""
-    global app_ready
-    try:
-        return web.json_response({
-            'status': 'ok',
-            'ready': app_ready,
-            'timestamp': str(datetime.now(timezone.utc)),
-            'message': 'Health endpoint is working'
-        })
-    except Exception as e:
-        logger.error(f"Error in health check: {e}")
-        # Fallback to plain text response if JSON fails
-        return web.Response(text="ok", status=200)
-
-async def root_endpoint(request):
-    """Root endpoint for basic connectivity test."""
-    return web.Response(text="Server is running", status=200)
-
-async def test_endpoint(request):
-    """Simple test endpoint to verify server is running."""
-    try:
-        return web.json_response({
-            'message': 'Server is running',
-            'timestamp': str(datetime.now(timezone.utc))
-        })
-    except Exception as e:
-        logger.error(f"Error in test endpoint: {e}")
-        return web.Response(text="Server is running", status=200)
-
-async def webhook_handler(request):
-    """Handle Telegram webhook updates."""
-    try:
-        # Get bot and dispatcher from global context
-        global app_context_global
-        bot = app_context_global.get('bot')
-        dp = app_context_global.get('dp')
+class TokenHolderBotApp:
+    def __init__(self):
+        self.bot = None
+        self.scheduler = None
+        self.health_server_thread = None
+        self.running = False
         
-        if not bot or not dp:
-            return web.Response(text="Bot not initialized", status=503)
-        
-        # Process the webhook update using aiogram 3.x method
-        update = await request.json()
-        await dp.feed_update(bot, update)
-        
-        return web.Response(text="ok", status=200)
-        
-    except Exception as e:
-        logger.error(f"Error handling webhook: {e}")
-        return web.Response(text="Error", status=500)
-
-def create_minimal_app():
-    """Create minimal web application with just health endpoints."""
-    app = web.Application()
+        # Setup signal handlers
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
     
-    # Add error handling middleware
-    @web.middleware
-    async def error_middleware(request, handler):
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals"""
+        logger.info(f"Received signal {signum}, shutting down...")
+        self.shutdown()
+    
+    def _start_health_server(self):
+        """Start health check server in a separate thread"""
         try:
-            return await handler(request)
+            # Get port from environment or use default
+            port = int(os.getenv('PORT', 8000))
+            logger.info(f"Starting health check server on port {port}")
+            
+            # Run health server in thread
+            self.health_server_thread = threading.Thread(
+                target=run_health_server, 
+                args=(port,),
+                daemon=True
+            )
+            self.health_server_thread.start()
+            
+            logger.info("Health check server started successfully")
+            
         except Exception as e:
-            logger.error(f"Unhandled error in {request.path}: {e}")
-            return web.Response(text="Internal error", status=500)
+            logger.error(f"Failed to start health server: {e}")
     
-    app.middlewares.append(error_middleware)
-    
-    # Add root endpoint
-    app.router.add_get('/', root_endpoint)
-    
-    # Add health check endpoint
-    app.router.add_get('/health', health_check)
-    
-    # Add test endpoint
-    app.router.add_get('/test', test_endpoint)
-    
-    # Add webhook endpoint
-    app.router.add_post('/webhook', webhook_handler)
-    
-    return app
-
-async def start_minimal_server():
-    """Start minimal web server immediately."""
-    try:
-        app = create_minimal_app()
-        
-        logger.info("Starting minimal web server...")
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        # Try to get port from environment, fallback to 8000
-        port = int(os.getenv("PORT", "8000"))
-        
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        
-        logger.info(f"Minimal web server started successfully on port {port}")
-        logger.info("Health endpoint /health is now accessible")
-        
-        return runner, site
-        
-    except Exception as e:
-        logger.error(f"Failed to start minimal web server: {e}")
-        raise
-
-async def initialize_full_app():
-    """Initialize the full application in the background."""
-    global app_ready
-    
-    try:
-        logger.info("Starting full application initialization...")
-        
-        # Import dependencies only when needed
-        from aiogram import Bot, Dispatcher
-        from bot import create_bot, create_dispatcher
-        from database import get_db_manager
-        from blockchain import BitqueryMonitor
-        from config import config
-        
-        # Validate configuration
-        config.validate()
-        logger.info("Configuration validated successfully")
-        
-        # Try to initialize database, but don't fail the entire app if it fails
-        db_manager = None
+    async def start(self):
+        """Start the bot and scheduler"""
         try:
-            db_manager = await get_db_manager()
-            logger.info("Database initialized successfully")
+            logger.info("Starting Token Holder Bot Application...")
+            
+            # Validate configuration
+            Config.validate()
+            logger.info("Configuration validated successfully")
+            
+            # Start health check server
+            self._start_health_server()
+            
+            # Initialize bot
+            self.bot = TokenHolderBot()
+            logger.info("Bot initialized successfully")
+            
+            # Initialize scheduler
+            self.scheduler = SnapshotScheduler()
+            logger.info("Scheduler initialized successfully")
+            
+            # Start scheduler
+            self.scheduler.start_scheduler()
+            logger.info("Scheduler started successfully")
+            
+            self.running = True
+            logger.info("Application started successfully")
+            logger.info("Health check endpoints available at /health and /")
+            
+            # Start the bot (this will block)
+            self.bot.run()
+            
         except Exception as e:
-            logger.warning(f"Database initialization failed: {e}")
-            logger.info("Continuing without database - some features will be limited")
+            logger.error(f"Failed to start application: {e}")
+            self.shutdown()
+            sys.exit(1)
+    
+    def shutdown(self):
+        """Shutdown the application gracefully"""
+        if not self.running:
+            return
         
-        # Try to initialize Bitquery monitor, but don't fail the entire app if it fails
-        blockchain_monitor = None
+        logger.info("Shutting down application...")
+        self.running = False
+        
         try:
-            blockchain_monitor = BitqueryMonitor()
-            await blockchain_monitor.initialize()
-            logger.info("Bitquery monitor initialized successfully")
+            # Stop scheduler
+            if self.scheduler:
+                self.scheduler.close()
+                logger.info("Scheduler stopped")
+            
+            # Stop bot
+            if self.bot:
+                self.bot.stop()
+                logger.info("Bot stopped")
+                
+            # Health server will stop automatically as it's a daemon thread
+            logger.info("Health check server stopped")
+                
         except Exception as e:
-            logger.warning(f"Bitquery monitor initialization failed: {e}")
-            logger.info("Continuing without blockchain monitoring - some features will be limited")
+            logger.error(f"Error during shutdown: {e}")
         
-        # Create bot and dispatcher
-        bot = None
-        dp = None
-        try:
-            bot = create_bot()
-            dp = await create_dispatcher()
-            logger.info("Bot and dispatcher created successfully")
-        except Exception as e:
-            logger.error(f"Bot initialization failed: {e}")
-            logger.info("Bot functionality will not be available")
-        
-        # Start Bitquery monitoring in background if available
-        monitoring_task = None
-        if blockchain_monitor:
-            try:
-                monitoring_task = asyncio.create_task(
-                    blockchain_monitor.start_monitoring(interval_seconds=1800)  # 30 minutes
-                )
-                logger.info("Bitquery monitoring started")
-            except Exception as e:
-                logger.warning(f"Failed to start Bitquery monitoring: {e}")
-        
-        # Store components in app context for webhook handler
-        # Get the current app from the request context or create a simple dict
-        app_context = {}
-        if db_manager:
-            app_context['db_manager'] = db_manager
-        if blockchain_monitor:
-            app_context['blockchain_monitor'] = blockchain_monitor
-        if bot:
-            app_context['bot'] = bot
-        if dp:
-            app_context['dp'] = dp
-        if monitoring_task:
-            app_context['monitoring_task'] = monitoring_task
-        
-        # Store in global context for webhook handler
-        global app_context_global
-        app_context_global = app_context
-        
-        # Mark app as ready if at least basic components are working
-        if bot and dp:
-            app_ready = True
-            logger.info("Full application initialization completed successfully")
-        else:
-            logger.warning("Application initialization completed with limited functionality")
-            app_ready = False
-        
-        return {
-            'bot': bot,
-            'dp': dp,
-            'db_manager': db_manager,
-            'blockchain_monitor': blockchain_monitor,
-            'monitoring_task': monitoring_task
-        }
-        
-    except Exception as e:
-        logger.error(f"Full application initialization failed: {e}")
-        app_ready = False
-        return None
+        logger.info("Application shutdown complete")
 
 async def main():
-    """Main application entry point."""
+    """Main entry point"""
+    app = TokenHolderBotApp()
+    
     try:
-        # Start minimal server immediately
-        runner, site = await start_minimal_server()
-        
-        # Initialize full app in background
-        init_task = asyncio.create_task(initialize_full_app())
-        
-        # Keep the server running
-        try:
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            logger.info("Received shutdown signal")
-        finally:
-            # Cleanup
-            init_task.cancel()
-            await runner.cleanup()
-            
+        await app.start()
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt")
     except Exception as e:
-        logger.error(f"Application error: {e}")
-        sys.exit(1)
+        logger.error(f"Unexpected error: {e}")
+    finally:
+        app.shutdown()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Application stopped by user")
+        logger.info("Application interrupted by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         sys.exit(1)
