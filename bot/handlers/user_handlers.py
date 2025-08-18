@@ -9,7 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from typing import Optional
 
 from database import get_db_manager
-from blockchain import BlockchainMonitor
+from blockchain import BitqueryMonitor
 from bot.keyboards import (
     get_main_keyboard, get_leaderboard_keyboard, get_wallet_link_keyboard,
     get_back_keyboard, get_refresh_keyboard
@@ -108,12 +108,15 @@ async def check_status(callback: CallbackQuery):
             await callback.answer()
             return
         
-        # Get detailed status from blockchain monitor
-        monitor = BlockchainMonitor()
+        # Get detailed status from Bitquery monitor
+        monitor = BitqueryMonitor()
         await monitor.initialize()
         
-        status_data = await monitor.check_holder_eligibility(holder.wallet_address)
-        status_msg = get_status_message(status_data)
+        status_data = await monitor.get_holder_details(holder.wallet_address)
+        if status_data:
+            status_msg = get_status_message(status_data)
+        else:
+            status_msg = "❌ **Status Check Failed**\n\nUnable to retrieve current status. Please try again later."
         
         await monitor.close()
         
@@ -129,30 +132,36 @@ async def check_status(callback: CallbackQuery):
         await callback.answer("❌ Error checking status. Please try again.")
 
 
-@router.callback_query(F.data == "leaderboard")
+@router.callback_query(F.data.startswith("leaderboard"))
 async def leaderboard(callback: CallbackQuery):
-    """Handle leaderboard callback."""
+    """Handle leaderboard callback - sorted by holding days using Bitquery."""
     try:
         # Parse page number from callback data
         page = 0
         if ":" in callback.data:
             page = int(callback.data.split(":")[1])
         
-        db_manager = await get_db_manager()
+        # Initialize Bitquery monitor
+        monitor = BitqueryMonitor()
+        await monitor.initialize()
         
-        # Get leaderboard data
+        # Get leaderboard data sorted by holding days
         per_page = 10
-        offset = page * per_page
+        total_limit = (page + 1) * per_page + 20  # Get extra for pagination
         
-        leaderboard_data = await db_manager.get_leaderboard(limit=per_page + offset)
+        leaderboard_data = await monitor.get_leaderboard_by_holding_days(limit=total_limit)
+        
+        await monitor.close()
         
         # Paginate results
+        offset = page * per_page
         page_data = leaderboard_data[offset:offset + per_page]
         total_pages = (len(leaderboard_data) + per_page - 1) // per_page
         
         if not page_data:
             await callback.message.edit_text(
-                "📊 **Leaderboard**\n\nNo holders found yet!",
+                "📊 **Holding Days Leaderboard**\n\nNo eligible holders found yet!\n\n"
+                "💡 Start holding tokens to appear on the leaderboard!",
                 reply_markup=get_back_keyboard(),
                 parse_mode="Markdown"
             )
@@ -160,20 +169,36 @@ async def leaderboard(callback: CallbackQuery):
             return
         
         # Format leaderboard message
-        leaderboard_msg = "🏆 **Token Holder Leaderboard**\n\n"
+        leaderboard_msg = "🏆 **Holding Days Leaderboard**\n"
+        leaderboard_msg += "📊 *Sorted by longest holding period*\n\n"
         
         for i, holder_data in enumerate(page_data, start=offset + 1):
             rank_emoji = get_rank_emoji(i)
             wallet = format_wallet_address(holder_data["wallet_address"])
             balance = format_number(holder_data["current_balance"])
-            days = format_holding_period(holder_data["holding_days"])
+            days = holder_data["holding_days"]
             
-            status = "✅" if holder_data["is_eligible"] else "⏳"
+            # Format holding days with appropriate emoji
+            if days >= config.MINIMUM_HOLD_DAYS:
+                days_text = f"🎯 **{days} days**"
+                status = "✅"
+            else:
+                days_remaining = config.MINIMUM_HOLD_DAYS - days
+                days_text = f"⏳ {days} days ({days_remaining} to go)"
+                status = "⏳"
             
-            leaderboard_msg += f"{rank_emoji} **#{i}** {wallet}\n"
-            leaderboard_msg += f"    💰 {balance} tokens • 📅 {days} {status}\n\n"
+            leaderboard_msg += f"{rank_emoji} **#{i}** {wallet} {status}\n"
+            leaderboard_msg += f"    📅 {days_text} • 💰 {balance} tokens\n\n"
         
-        leaderboard_msg += f"📄 Page {page + 1} of {total_pages}"
+        if total_pages > 1:
+            leaderboard_msg += f"📄 Page {page + 1} of {total_pages}"
+        
+        # Update leaderboard info text
+        info_text = (
+            "📊 Leaderboard shows holders ranked by holding period. "
+            f"Hold for {config.MINIMUM_HOLD_DAYS}+ days to be eligible for rewards! "
+            "✅ = Eligible, ⏳ = Building eligibility"
+        )
         
         await callback.message.edit_text(
             truncate_text(leaderboard_msg),

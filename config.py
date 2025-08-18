@@ -20,8 +20,11 @@ class Config:
     # Database Configuration
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     
-    # Tatum API Configuration
+    # Tatum API Configuration (fallback)
     TATUM_API_KEY: str = os.getenv("TATUM_API_KEY", "")
+    
+    # Bitquery API Configuration
+    BITQUERY_API_KEY: str = os.getenv("BITQUERY_API_KEY", "")
     
     # Token Configuration
     TOKEN_CONTRACT_ADDRESS: str = os.getenv("TOKEN_CONTRACT_ADDRESS", "")
@@ -40,9 +43,12 @@ class Config:
         required_vars = [
             "BOT_TOKEN",
             "DATABASE_URL",
-            "TATUM_API_KEY",
             "TOKEN_CONTRACT_ADDRESS"
         ]
+        
+        # Check if either Bitquery or Tatum API key is provided
+        if not getattr(cls, "BITQUERY_API_KEY") and not getattr(cls, "TATUM_API_KEY"):
+            raise ValueError("Either BITQUERY_API_KEY or TATUM_API_KEY must be provided")
         
         missing_vars = []
         for var in required_vars:

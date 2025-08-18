@@ -142,7 +142,7 @@ async def initialize_full_app():
         from aiogram import Bot, Dispatcher
         from bot import create_bot, create_dispatcher
         from database import get_db_manager
-        from blockchain import BlockchainMonitor
+        from blockchain import BitqueryMonitor
         from config import config
         
         # Validate configuration
@@ -158,14 +158,14 @@ async def initialize_full_app():
             logger.warning(f"Database initialization failed: {e}")
             logger.info("Continuing without database - some features will be limited")
         
-        # Try to initialize blockchain monitor, but don't fail the entire app if it fails
+        # Try to initialize Bitquery monitor, but don't fail the entire app if it fails
         blockchain_monitor = None
         try:
-            blockchain_monitor = BlockchainMonitor()
+            blockchain_monitor = BitqueryMonitor()
             await blockchain_monitor.initialize()
-            logger.info("Blockchain monitor initialized successfully")
+            logger.info("Bitquery monitor initialized successfully")
         except Exception as e:
-            logger.warning(f"Blockchain monitor initialization failed: {e}")
+            logger.warning(f"Bitquery monitor initialization failed: {e}")
             logger.info("Continuing without blockchain monitoring - some features will be limited")
         
         # Create bot and dispatcher
@@ -179,16 +179,16 @@ async def initialize_full_app():
             logger.error(f"Bot initialization failed: {e}")
             logger.info("Bot functionality will not be available")
         
-        # Start blockchain monitoring in background if available
+        # Start Bitquery monitoring in background if available
         monitoring_task = None
         if blockchain_monitor:
             try:
                 monitoring_task = asyncio.create_task(
-                    blockchain_monitor.start_monitoring(interval_seconds=300)
+                    blockchain_monitor.start_monitoring(interval_seconds=1800)  # 30 minutes
                 )
-                logger.info("Blockchain monitoring started")
+                logger.info("Bitquery monitoring started")
             except Exception as e:
-                logger.warning(f"Failed to start blockchain monitoring: {e}")
+                logger.warning(f"Failed to start Bitquery monitoring: {e}")
         
         # Store components in app context for webhook handler
         # Get the current app from the request context or create a simple dict
