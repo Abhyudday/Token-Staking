@@ -162,6 +162,8 @@ class Database:
         """Get leaderboard ranked by days held"""
         try:
             threshold = self.get_minimum_usd_threshold()
+            logger.info(f"Fetching leaderboard with threshold: ${threshold}")
+            
             with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT 
@@ -178,16 +180,35 @@ class Database:
                     LIMIT %s
                 """, (threshold, limit))
                 
-                return cursor.fetchall()
+                results = cursor.fetchall()
+                logger.info(f"Leaderboard query returned {len(results)} results")
+                
+                if not results:
+                    logger.warning(f"No holders found above threshold ${threshold}")
+                    # Check if there are any holders at all
+                    cursor.execute("SELECT COUNT(*) FROM holders")
+                    total_holders = cursor.fetchone()[0]
+                    logger.info(f"Total holders in database: {total_holders}")
+                    
+                    if total_holders > 0:
+                        # Check what the highest USD value is
+                        cursor.execute("SELECT MAX(usd_value) FROM holders")
+                        max_usd = cursor.fetchone()[0]
+                        logger.info(f"Highest USD value in database: ${max_usd}")
+                
+                return results
                 
         except Exception as e:
             logger.error(f"Error getting leaderboard: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             return []
     
     def get_holder_rank(self, wallet_address):
         """Get the rank of a specific holder"""
         try:
             threshold = self.get_minimum_usd_threshold()
+            logger.info(f"Getting rank for wallet {wallet_address[:8]}...{wallet_address[-8:]} with threshold ${threshold}")
+            
             with self.conn.cursor() as cursor:
                 cursor.execute("""
                     WITH ranked_holders AS (
@@ -204,23 +225,49 @@ class Database:
                 """, (threshold, wallet_address))
                 
                 result = cursor.fetchone()
+                if result:
+                    rank, days_held = result
+                    logger.info(f"Wallet rank: {rank}, days held: {days_held}")
+                else:
+                    logger.warning(f"Wallet not found in ranked results")
+                    # Check if wallet exists at all
+                    cursor.execute("SELECT usd_value FROM holders WHERE wallet_address = %s", (wallet_address,))
+                    wallet_check = cursor.fetchone()
+                    if wallet_check:
+                        usd_value = wallet_check[0]
+                        logger.info(f"Wallet exists but below threshold. USD value: ${usd_value}, threshold: ${threshold}")
+                    else:
+                        logger.warning(f"Wallet not found in holders table")
+                
                 return result if result else (None, 0)
                 
         except Exception as e:
             logger.error(f"Error getting holder rank: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             return (None, 0)
     
     def get_total_holders(self):
         """Get total number of holders above threshold"""
         try:
             threshold = self.get_minimum_usd_threshold()
+            logger.info(f"Getting total holders count with threshold: ${threshold}")
+            
             with self.conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT COUNT(*) FROM holders WHERE usd_value >= %s
                 """, (threshold,))
-                return cursor.fetchone()[0]
+                count = cursor.fetchone()[0]
+                logger.info(f"Total holders above threshold: {count}")
+                
+                # Also log total holders regardless of threshold
+                cursor.execute("SELECT COUNT(*) FROM holders")
+                total_count = cursor.fetchone()[0]
+                logger.info(f"Total holders in database: {total_count}")
+                
+                return count
         except Exception as e:
             logger.error(f"Error getting total holders: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             return 0
     
     def close(self):

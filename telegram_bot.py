@@ -91,14 +91,23 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /leaderboard command"""
         try:
+            logger.info(f"Leaderboard command requested by user {update.effective_user.id}")
+            
             # Get leaderboard data
+            logger.info("Fetching leaderboard data from database...")
             leaderboard = self.db.get_leaderboard(limit=50)
+            logger.info(f"Leaderboard query returned {len(leaderboard) if leaderboard else 0} results")
             
             if not leaderboard:
+                logger.warning("No leaderboard data available - this could mean:")
+                logger.warning("- Database is empty")
+                logger.warning("- No snapshots have been taken yet")
+                logger.warning("- All holders are below minimum USD threshold")
                 await update.message.reply_text("❌ No leaderboard data available yet.")
                 return
             
             # Format leaderboard message
+            logger.info("Formatting leaderboard message...")
             message = "🏆 **Token Holder Leaderboard**\n\n"
             message += f"*Ranked by days held (minimum ${self.db.get_minimum_usd_threshold():.2f} USD)*\n\n"
             
@@ -118,20 +127,28 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             
             # Split message if too long
             if len(message) > 4096:
+                logger.info(f"Message too long ({len(message)} chars), splitting into parts...")
                 parts = [message[i:i+4096] for i in range(0, len(message), 4096)]
-                for part in parts:
+                logger.info(f"Split into {len(parts)} parts")
+                for i, part in enumerate(parts):
                     await update.message.reply_text(part, parse_mode='Markdown')
+                    logger.info(f"Sent part {i+1}/{len(parts)}")
             else:
                 await update.message.reply_text(message, parse_mode='Markdown')
+                logger.info(f"Sent leaderboard message ({len(message)} chars)")
                 
         except Exception as e:
             logger.error(f"Error in leaderboard command: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             await update.message.reply_text("❌ Error fetching leaderboard. Please try again later.")
     
     async def rank_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /rank command"""
         try:
+            logger.info(f"Rank command requested by user {update.effective_user.id}")
+            
             if not context.args:
+                logger.warning("Rank command called without wallet address")
                 await update.message.reply_text(
                     "❌ Please provide a wallet address.\n"
                     "Usage: `/rank <wallet_address>`"
@@ -139,16 +156,21 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                 return
             
             wallet_address = context.args[0]
+            logger.info(f"Checking rank for wallet: {wallet_address[:8]}...{wallet_address[-8:]}")
             
             # Validate wallet address
             if not self.solscan.validate_wallet_address(wallet_address):
+                logger.warning(f"Invalid wallet address provided: {wallet_address}")
                 await update.message.reply_text("❌ Invalid Solana wallet address.")
                 return
             
             # Get holder rank
+            logger.info("Fetching holder rank from database...")
             rank, days_held = self.db.get_holder_rank(wallet_address)
+            logger.info(f"Rank query result: rank={rank}, days_held={days_held}")
             
             if rank is None:
+                logger.warning(f"Wallet not found in leaderboard: {wallet_address[:8]}...{wallet_address[-8:]}")
                 await update.message.reply_text(
                     "❌ Wallet not found in leaderboard.\n"
                     "This could mean:\n"
@@ -159,6 +181,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                 return
             
             # Get holder details
+            logger.info("Fetching holder details...")
             with self.db.conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT token_balance, usd_value, first_seen_date 
@@ -168,6 +191,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             
             if result:
                 token_balance, usd_value, first_seen_date = result
+                logger.info(f"Holder details: balance={token_balance}, usd_value={usd_value}, first_seen={first_seen_date}")
                 
                 message = f"📊 **Wallet Rank Information**\n\n"
                 message += f"**Wallet:** `{wallet_address}`\n"
@@ -179,19 +203,27 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                 message += f"**Minimum Threshold:** ${self.db.get_minimum_usd_threshold():.2f}"
                 
                 await update.message.reply_text(message, parse_mode='Markdown')
+                logger.info(f"Rank information sent successfully for wallet {wallet_address[:8]}...{wallet_address[-8:]}")
             else:
+                logger.error(f"Failed to fetch holder details for wallet: {wallet_address[:8]}...{wallet_address[-8:]}")
                 await update.message.reply_text("❌ Error fetching wallet details.")
                 
         except Exception as e:
             logger.error(f"Error in rank command: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             await update.message.reply_text("❌ Error fetching rank. Please try again later.")
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
         try:
+            logger.info(f"Stats command requested by user {update.effective_user.id}")
+            
+            logger.info("Fetching snapshot statistics...")
             stats = self.snapshot_service.get_snapshot_stats()
+            logger.info(f"Stats service returned: {stats}")
             
             if not stats:
+                logger.warning("No statistics available from snapshot service")
                 await update.message.reply_text("❌ No statistics available yet.")
                 return
             
@@ -201,6 +233,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             message += f"**Last Snapshot:** {stats['snapshot_date']}\n\n"
             
             if stats['top_holders']:
+                logger.info(f"Found {len(stats['top_holders'])} top holders")
                 message += "**Top 5 Holders:**\n"
                 for i, holder in enumerate(stats['top_holders'][:5], 1):
                     wallet = holder['wallet_address']
@@ -209,20 +242,29 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                     
                     display_wallet = f"{wallet[:8]}...{wallet[-8:]}"
                     message += f"{i}. {display_wallet} - {days_held} days (${usd_value:,.2f})\n"
+            else:
+                logger.warning("No top holders in stats")
+                message += "**Top Holders:** No data available\n"
             
+            logger.info(f"Sending stats message ({len(message)} chars)")
             await update.message.reply_text(message, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             await update.message.reply_text("❌ Error fetching statistics. Please try again later.")
     
     async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /admin command"""
         user_id = update.effective_user.id
+        logger.info(f"Admin command requested by user {user_id}")
         
         if user_id not in Config.ADMIN_USER_IDS:
+            logger.warning(f"Unauthorized admin access attempt by user {user_id}")
             await update.message.reply_text("❌ Access denied. Admin privileges required.")
             return
+        
+        logger.info(f"Admin access granted to user {user_id}")
         
         # Create admin panel keyboard
         keyboard = [
@@ -240,15 +282,19 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        logger.info(f"Admin panel displayed to user {user_id}")
     
     async def snapshot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /snapshot command (admin only)"""
         user_id = update.effective_user.id
+        logger.info(f"Snapshot command requested by user {user_id}")
         
         if user_id not in Config.ADMIN_USER_IDS:
+            logger.warning(f"Unauthorized snapshot attempt by user {user_id}")
             await update.message.reply_text("❌ Access denied. Admin privileges required.")
             return
         
+        logger.info(f"Manual snapshot initiated by admin user {user_id}")
         await update.message.reply_text("📸 Starting manual snapshot... This may take a few minutes.")
         
         # Run snapshot in background
@@ -257,24 +303,31 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def _run_snapshot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Run snapshot in background and notify user"""
         try:
+            logger.info("Starting manual snapshot process...")
             success = self.snapshot_service.take_daily_snapshot()
             
             if success:
+                logger.info("Manual snapshot completed successfully")
                 await update.message.reply_text("✅ Manual snapshot completed successfully!")
             else:
+                logger.error("Manual snapshot failed")
                 await update.message.reply_text("❌ Manual snapshot failed. Check logs for details.")
                 
         except Exception as e:
             logger.error(f"Error in manual snapshot: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             await update.message.reply_text(f"❌ Error during snapshot: {str(e)}")
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button callbacks from admin panel"""
         query = update.callback_query
+        user_id = update.effective_user.id
+        logger.info(f"Button callback from user {user_id}: {query.data}")
+        
         await query.answer()
         
-        user_id = update.effective_user.id
         if user_id not in Config.ADMIN_USER_IDS:
+            logger.warning(f"Unauthorized button callback from user {user_id}")
             await query.edit_message_text("❌ Access denied.")
             return
         
@@ -292,6 +345,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def _handle_admin_stats(self, query):
         """Handle admin stats button"""
         try:
+            logger.info("Admin stats button clicked")
             stats = self.snapshot_service.get_snapshot_stats()
             validation = self.snapshot_service.validate_snapshot_data()
             
@@ -305,6 +359,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                 message += f"{validation.get('orphaned_snapshots', 0)} orphaned snapshots\n"
             
             await query.edit_message_text(message, parse_mode='Markdown')
+            logger.info("Admin stats displayed successfully")
             
         except Exception as e:
             logger.error(f"Error in admin stats: {e}")
@@ -312,9 +367,13 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     
     async def _handle_set_threshold(self, query):
         """Handle set threshold button"""
+        logger.info("Set threshold button clicked")
+        current_threshold = self.db.get_minimum_usd_threshold()
+        logger.info(f"Current threshold: ${current_threshold}")
+        
         await query.edit_message_text(
             "💰 **Set Minimum USD Threshold**\n\n"
-            "Current threshold: ${:.2f}\n\n"
+            f"Current threshold: ${current_threshold:.2f}\n\n"
             "To change the threshold, use:\n"
             "/set_threshold <amount>\n\n"
             "Example: /set_threshold 100",
@@ -323,6 +382,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     
     async def _handle_manual_snapshot(self, query):
         """Handle manual snapshot button"""
+        logger.info("Manual snapshot button clicked")
         await query.edit_message_text("📸 Starting manual snapshot... This may take a few minutes.")
         
         # Run snapshot in background
@@ -331,11 +391,14 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def _run_admin_snapshot(self, query):
         """Run snapshot for admin panel"""
         try:
+            logger.info("Starting admin panel snapshot...")
             success = self.snapshot_service.take_daily_snapshot()
             
             if success:
+                logger.info("Admin panel snapshot completed successfully")
                 await query.edit_message_text("✅ Manual snapshot completed successfully!")
             else:
+                logger.error("Admin panel snapshot failed")
                 await query.edit_message_text("❌ Manual snapshot failed. Check logs for details.")
                 
         except Exception as e:
@@ -345,6 +408,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def _handle_cleanup_data(self, query):
         """Handle cleanup data button"""
         try:
+            logger.info("Cleanup data button clicked")
             deleted_count = self.snapshot_service.cleanup_old_snapshots()
             
             message = f"🧹 **Data Cleanup Completed**\n\n"
@@ -352,6 +416,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             message += "This helps maintain database performance."
             
             await query.edit_message_text(message, parse_mode='Markdown')
+            logger.info(f"Data cleanup completed, deleted {deleted_count} snapshots")
             
         except Exception as e:
             logger.error(f"Error in cleanup: {e}")
@@ -360,16 +425,19 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def _handle_validate_data(self, query):
         """Handle validate data button"""
         try:
+            logger.info("Validate data button clicked")
             validation = self.snapshot_service.validate_snapshot_data()
             
             message = "✅ **Data Validation Results**\n\n"
             
             if validation['is_valid']:
                 message += "**Status:** All data is valid! 🎉\n"
+                logger.info("Data validation passed")
             else:
                 message += "**Status:** Issues found ❌\n"
                 message += f"**Holders without snapshots:** {validation.get('holders_without_snapshots', 0)}\n"
                 message += f"**Orphaned snapshots:** {validation.get('orphaned_snapshots', 0)}\n"
+                logger.warning(f"Data validation failed: {validation}")
             
             await query.edit_message_text(message, parse_mode='Markdown')
             
