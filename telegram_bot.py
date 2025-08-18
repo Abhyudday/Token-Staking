@@ -380,13 +380,25 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     def run(self):
         """Start the bot"""
         logger.info("Starting Token Holder Bot...")
-        self.application.run_polling()
+        try:
+            # Run the bot in the current event loop
+            self.application.run_polling()
+        except Exception as e:
+            logger.error(f"Error running bot: {e}")
+            raise
     
     def stop(self):
         """Stop the bot and close connections"""
         logger.info("Stopping Token Holder Bot...")
-        self.snapshot_service.close()
-        self.db.close()
+        try:
+            # Stop the application
+            if hasattr(self.application, 'stop'):
+                self.application.stop()
+        except Exception as e:
+            logger.error(f"Error stopping bot: {e}")
+        finally:
+            self.snapshot_service.close()
+            self.db.close()
 
 if __name__ == "__main__":
     # Validate configuration

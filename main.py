@@ -73,8 +73,8 @@ class TokenHolderBotApp:
         except Exception as e:
             logger.error(f"Failed to start health server: {e}")
     
-    async def start(self):
-        """Start the bot and scheduler"""
+    def start(self):
+        """Start the bot and scheduler (non-async version)"""
         try:
             logger.info("Starting Token Holder Bot Application...")
             
@@ -136,12 +136,12 @@ class TokenHolderBotApp:
         
         logger.info("Application shutdown complete")
 
-async def main():
+def main():
     """Main entry point"""
     app = TokenHolderBotApp()
     
     try:
-        await app.start()
+        app.start()
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except Exception as e:
@@ -151,7 +151,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Application interrupted by user")
     except Exception as e:
