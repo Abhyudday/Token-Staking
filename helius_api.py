@@ -10,8 +10,8 @@ class HeliusAPI:
         self.api_key = Config.HELIUS_API_KEY
         # Helius RPC endpoint
         self.rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
-        # Jupiter API for price fallback
-        self.jupiter_price_url = "https://price.jup.ag/v4/price"
+        # DexScreener API for price (more reliable than Jupiter)
+        self.dexscreener_url = "https://api.dexscreener.com/latest/dex/tokens"
 
     def get_token_holders(self, token_mint: str, page_limit: int = 1000, max_pages: int = 1000) -> List[Dict]:
         """Get all token accounts (holders) using Helius getTokenAccounts with pagination.
@@ -61,10 +61,10 @@ class HeliusAPI:
     def get_token_price_usd(self, token_mint: str) -> float:
         """Fetch token price in USD using multiple price sources for reliability."""
         price_sources = [
-            ("Jupiter API", self._get_jupiter_price),
+            ("DexScreener API", self._get_dexscreener_price),
             ("Birdeye API", self._get_birdeye_price),
-            ("Helius Token Metadata", self._get_helius_price),
-            ("Raydium API", self._get_raydium_price)
+            ("Raydium API", self._get_raydium_price),
+            ("Helius Token Metadata", self._get_helius_price)
         ]
         
         for source_name, price_func in price_sources:
@@ -82,19 +82,30 @@ class HeliusAPI:
         logger.warning(f"All price sources failed for token {token_mint}")
         return 0.0
     
-    def _get_jupiter_price(self, token_mint: str) -> float:
-        """Get price from Jupiter API"""
+    def _get_dexscreener_price(self, token_mint: str) -> float:
+        """Get price from DexScreener API"""
         try:
-            jupiter_params = {"ids": token_mint}
-            resp = requests.get(self.jupiter_price_url, params=jupiter_params, timeout=15)
+            # DexScreener API expects the token address directly in the URL
+            dexscreener_url = f"{self.dexscreener_url}/{token_mint}"
+            resp = requests.get(dexscreener_url, timeout=15)
+            
             if resp.status_code == 200:
                 data = resp.json()
-                if data and "data" in data and token_mint in data["data"]:
-                    price = data["data"][token_mint].get("price")
+                if data and "pairs" in data and data["pairs"]:
+                    # Get the first pair (most liquid)
+                    pair = data["pairs"][0]
+                    price = pair.get("priceUsd")
                     if price is not None and price > 0:
+                        logger.info(f"DexScreener: Found price ${price} for {token_mint}")
                         return float(price)
+                    else:
+                        logger.debug(f"DexScreener: No valid price in pair data")
+                else:
+                    logger.debug(f"DexScreener: No pairs found for token {token_mint}")
+            else:
+                logger.debug(f"DexScreener: HTTP {resp.status_code}")
         except Exception as e:
-            logger.debug(f"Jupiter API error: {e}")
+            logger.debug(f"DexScreener API error: {e}")
         return 0.0
     
     def _get_birdeye_price(self, token_mint: str) -> float:
