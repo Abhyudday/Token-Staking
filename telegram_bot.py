@@ -7,7 +7,6 @@ from snapshot_service import SnapshotService
 from helius_api import HeliusAPI
 from config import Config
 import json
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -36,7 +35,6 @@ class TokenHolderBot:
         self.application.add_handler(CommandHandler("stats", self.stats_command))
         self.application.add_handler(CommandHandler("admin", self.admin_command))
         self.application.add_handler(CommandHandler("snapshot", self.snapshot_command))
-        self.application.add_handler(CommandHandler("price", self.price_command))
         
         # Callback query handler for admin panel
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -65,20 +63,19 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_message = """
-🤖 **Token Holder Bot Commands**
+📚 **Bot Help & Commands**
 
 **User Commands:**
-• `/start` - Start the bot and see welcome message
-• `/help` - Show this help message
-• `/leaderboard` - View top 50 token holders ranked by days held
-• `/rank <wallet>` - Check your wallet's rank and days held
-• `/price` - Check current token price status
+• `/start` - Welcome message and bot introduction
+• `/leaderboard` - View top token holders ranked by days held
+• `/rank <wallet_address>` - Check specific wallet's rank
+• `/stats` - View bot statistics and current snapshot info
 
 **Admin Commands:**
 • `/admin` - Access admin panel (admin only)
-• `/snapshot` - Take manual snapshot (admin only)
+• `/snapshot` - Manually trigger a snapshot (admin only)
 
-**How it works:**
+**How It Works:**
 1. Bot takes daily snapshots of all token holders
 2. Each day a wallet holds tokens, their "days_held" increases
 3. Leaderboard ranks wallets by days held (highest first)
@@ -87,7 +84,6 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
 **Example Usage:**
 • `/rank 9M7eYNNP4TdJCmMspKpdbEhvpdds6E5WFVTTLjXfVray`
 • `/leaderboard` - Shows top 50 holders
-• `/price` - Check if token price is available
         """
         
         await update.message.reply_text(help_message, parse_mode='Markdown')
@@ -477,46 +473,20 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
         try:
             await update.callback_query.answer("Starting manual snapshot...")
             
-            # Show starting message
-            await update.callback_query.edit_message_text(
-                "🔄 **Manual Snapshot Starting**\n\n"
-                "Please wait while the snapshot processes..."
-            )
+            # Start snapshot in background
+            import threading
+            snapshot_thread = threading.Thread(target=self.snapshot_service.take_daily_snapshot)
+            snapshot_thread.start()
             
-            # Run snapshot synchronously to get proper error handling
-            try:
-                # Check if admin has set a manual price
-                manual_price = context.user_data.get('manual_token_price')
-                
-                if manual_price:
-                    logger.info(f"Using manual price: ${manual_price}")
-                    self.snapshot_service.take_daily_snapshot(manual_price=manual_price)
-                else:
-                    logger.info("No manual price set, using API prices")
-                    self.snapshot_service.take_daily_snapshot()
-                
-                # Get updated stats
-                stats = self.db.get_bot_stats()
-                
-                message = "✅ **Manual Snapshot Completed**\n\n"
-                message += f"**Processed:** {stats.get('total_holders', 0)} holders\n"
-                message += f"**Total Snapshots:** {stats.get('total_snapshots', 0)}\n"
-                message += f"**Last Snapshot:** {stats.get('last_snapshot', 'Never')}\n\n"
-                message += "Snapshot data has been updated successfully!"
-                
-                await update.callback_query.edit_message_text(message, parse_mode='Markdown')
-                logger.info("Manual snapshot completed successfully")
-                
-            except Exception as e:
-                error_message = f"❌ **Manual Snapshot Failed**\n\n"
-                error_message += f"Error: {str(e)}\n\n"
-                error_message += "Check logs for more details."
-                
-                await update.callback_query.edit_message_text(error_message, parse_mode='Markdown')
-                logger.error(f"Manual snapshot failed: {e}")
+            await update.callback_query.edit_message_text(
+                "🔄 **Manual Snapshot Started**\n\n"
+                "Snapshot is running in the background.\n"
+                "Check logs for progress updates."
+            )
+            logger.info("Manual snapshot started by admin")
             
         except Exception as e:
-            logger.error(f"Error in admin manual snapshot: {e}")
+            logger.error(f"Error starting manual snapshot: {e}")
             await update.callback_query.answer("Error starting snapshot")
     
     async def _handle_admin_view_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -583,39 +553,6 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             logger.error(f"Error handling price input: {e}")
             await update.message.reply_text("❌ Error setting price. Please try again.")
             context.user_data['awaiting_price_input'] = False
-    
-    async def price_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /price command to check token price status"""
-        try:
-            logger.info(f"Price command requested by user {update.effective_user.id}")
-            
-            # Try to get current price from APIs
-            current_price = self.helius.get_token_price_usd(self.token_address)
-            
-            message = "💵 **Token Price Status**\n\n"
-            message += f"**Token:** `{self.token_address}`\n\n"
-            
-            if current_price > 0:
-                message += f"✅ **Current Price:** ${current_price:.8f}\n"
-                message += "Price source: API (Jupiter/Birdeye/Raydium/Helius)\n"
-            else:
-                message += "❌ **Current Price:** $0.00\n"
-                message += "All price APIs failed to return a value\n\n"
-                
-                if self._is_admin(update.effective_user.id):
-                    message += "🔧 **Admin Action Required:**\n"
-                    message += "Use `/admin` → '💵 Set Token Price' to set manual price\n"
-                else:
-                    message += "⚠️ **Note:** Contact admin to set token price manually\n"
-            
-            message += f"\n**Last Check:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            await update.message.reply_text(message, parse_mode='Markdown')
-            logger.info(f"Price status sent to user {update.effective_user.id}")
-            
-        except Exception as e:
-            logger.error(f"Error in price command: {e}")
-            await update.message.reply_text("❌ Error checking token price. Please try again later.")
     
     def _is_admin(self, user_id: int) -> bool:
         """Check if user is admin"""
