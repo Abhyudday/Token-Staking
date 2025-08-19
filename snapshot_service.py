@@ -14,7 +14,7 @@ class SnapshotService:
         self.helius = HeliusAPI()
         self.token_address = Config.TOKEN_CONTRACT_ADDRESS
     
-    def take_daily_snapshot(self):
+    def take_daily_snapshot(self, manual_price=None):
         """Take a daily snapshot of token holders"""
         try:
             logger.info("Starting daily snapshot process...")
@@ -23,8 +23,8 @@ class SnapshotService:
             token_price = self.helius.get_token_price_usd(self.token_address)
             
             # Check if admin set manual price
-            if hasattr(self, 'manual_token_price') and self.manual_token_price:
-                token_price = self.manual_token_price
+            if manual_price and manual_price > 0:
+                token_price = manual_price
                 logger.info(f"Using admin-set manual price: ${token_price}")
             elif token_price > 0:
                 logger.info(f"Using API price: ${token_price}")
