@@ -52,6 +52,10 @@ class SnapshotService:
                     # Calculate USD value
                     usd_value = token_balance * token_price if token_price > 0 else 0.0
                     
+                    # Log the amounts for debugging
+                    logger.info(f"Processing holder {wallet_address[:8]}...{wallet_address[-8:]}: "
+                              f"tokens={token_balance:,.2f}, price=${token_price:.8f}, usd=${usd_value:,.2f}")
+                    
                     # Upsert holder record
                     self.db.upsert_holder(wallet_address, token_balance, usd_value)
                     

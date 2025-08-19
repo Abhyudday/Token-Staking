@@ -19,6 +19,11 @@ class HeliusAPI:
         """
         holders: Dict[str, float] = {}
         page = 1
+        
+        # Get token decimals first
+        token_decimals = self._get_token_decimals(token_mint)
+        logger.info(f"Token {token_mint} has {token_decimals} decimals")
+        
         while True:
             if page > max_pages:
                 logger.warning("Reached max_pages limit while fetching token holders")
@@ -47,16 +52,50 @@ class HeliusAPI:
                 for account in token_accounts:
                     owner = account.get("owner")
                     amount_raw = account.get("amount", 0)
-                    amount = float(amount_raw) if isinstance(amount_raw, (int, float)) else float(amount_raw or 0)
+                    
+                    # Convert raw amount to actual token amount using decimals
+                    if amount_raw and amount_raw > 0:
+                        # Raw amount is in smallest units (e.g., lamports for SOL)
+                        # Convert to actual tokens by dividing by 10^decimals
+                        actual_amount = amount_raw / (10 ** token_decimals)
+                        logger.debug(f"Wallet {owner[:8]}...{owner[-8:]}: raw={amount_raw}, decimals={token_decimals}, actual={actual_amount}")
+                    else:
+                        actual_amount = 0.0
+                    
                     if not owner:
                         continue
-                    holders[owner] = holders.get(owner, 0.0) + amount
+                    holders[owner] = holders.get(owner, 0.0) + actual_amount
                 page += 1
             except Exception as e:
                 logger.error(f"Helius get_token_holders error on page {page}: {e}")
                 break
         # Transform to list of dicts to match previous interface
         return [{"owner": owner, "amount": amount} for owner, amount in holders.items()]
+    
+    def _get_token_decimals(self, token_mint: str) -> int:
+        """Get the number of decimals for a token"""
+        try:
+            # Try to get decimals from Helius token metadata
+            helius_url = f"https://api.helius.xyz/v0/token-metadata?api-key={self.api_key}"
+            resp = requests.post(helius_url, json={"mintAccounts": [token_mint]}, timeout=15)
+            
+            if resp.status_code == 200:
+                arr = resp.json() or []
+                if arr and isinstance(arr, list) and arr[0]:
+                    metadata = arr[0]
+                    decimals = metadata.get("decimals")
+                    if decimals is not None:
+                        logger.info(f"Token decimals from Helius: {decimals}")
+                        return int(decimals)
+            
+            # Fallback: Use default Solana token decimals (usually 9)
+            logger.warning(f"Could not determine token decimals, using default: 9")
+            return 9
+            
+        except Exception as e:
+            logger.error(f"Error getting token decimals: {e}")
+            # Default fallback
+            return 9
 
     def get_token_price_usd(self, token_mint: str) -> float:
         """Fetch token price in USD using multiple price sources for reliability."""
