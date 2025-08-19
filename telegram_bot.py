@@ -335,13 +335,19 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             await query.edit_message_text("❌ Access denied.")
             return
         
+        logger.info(f"Processing admin button: {query.data}")
+        
         if query.data == "admin_set_threshold":
+            logger.info("Routing to admin set threshold handler")
             await self._handle_admin_set_threshold(query)
         elif query.data == "admin_view_stats":
+            logger.info("Routing to admin view stats handler")
             await self._handle_admin_view_stats(update, context)
         elif query.data == "admin_manual_snapshot":
+            logger.info("Routing to admin manual snapshot handler")
             await self._handle_admin_manual_snapshot(update, context)
         elif query.data == "admin_set_price":
+            logger.info("Routing to admin set price handler")
             await self._handle_admin_set_price(update, context)
         else:
             logger.warning(f"Unknown callback data: {query.data}")
@@ -369,6 +375,28 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
         except Exception as e:
             logger.error(f"Error in admin stats: {e}")
             await query.edit_message_text("❌ Error fetching admin stats.")
+    
+    async def _handle_admin_set_threshold(self, query):
+        """Handle admin set threshold button"""
+        try:
+            logger.info("Admin set threshold button clicked")
+            current_threshold = self.db.get_minimum_usd_threshold()
+            logger.info(f"Current threshold: ${current_threshold}")
+            
+            await query.edit_message_text(
+                "💰 **Set Minimum USD Threshold**\n\n"
+                f"Current threshold: **${current_threshold:.2f}**\n\n"
+                "To change the threshold, use:\n"
+                "`/set_threshold <amount>`\n\n"
+                "**Example:** `/set_threshold 100`\n\n"
+                "This will filter the leaderboard to show only holders with at least this USD value.",
+                parse_mode='Markdown'
+            )
+            logger.info("Admin threshold info displayed")
+            
+        except Exception as e:
+            logger.error(f"Error in admin set threshold: {e}")
+            await query.edit_message_text("❌ Error displaying threshold info")
     
     async def _handle_set_threshold(self, query):
         """Handle set threshold button"""
