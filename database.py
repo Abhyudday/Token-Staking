@@ -30,7 +30,7 @@ class Database:
                     CREATE TABLE IF NOT EXISTS holders (
                         id SERIAL PRIMARY KEY,
                         wallet_address VARCHAR(44) UNIQUE NOT NULL,
-                        token_balance DECIMAL(20, 8) NOT NULL,
+                        token_balance DECIMAL(30, 8) NOT NULL,
                         usd_value DECIMAL(15, 2),
                         first_seen_date DATE NOT NULL,
                         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -43,7 +43,7 @@ class Database:
                         id SERIAL PRIMARY KEY,
                         wallet_address VARCHAR(44) NOT NULL,
                         snapshot_date DATE NOT NULL,
-                        token_balance DECIMAL(20, 8) NOT NULL,
+                        token_balance DECIMAL(30, 8) NOT NULL,
                         usd_value DECIMAL(15, 2),
                         days_held INTEGER NOT NULL,
                         FOREIGN KEY (wallet_address) REFERENCES holders(wallet_address),
@@ -71,10 +71,42 @@ class Database:
                 self.conn.commit()
                 logger.info("Database tables created successfully")
                 
+                # Run migrations for existing tables
+                self._run_migrations()
+                
         except Exception as e:
             logger.error(f"Error creating tables: {e}")
             self.conn.rollback()
             raise
+    
+    def _run_migrations(self):
+        """Run database migrations for existing tables"""
+        try:
+            with self.conn.cursor() as cursor:
+                # Check if we need to migrate token_balance precision
+                cursor.execute("""
+                    SELECT column_name, data_type, numeric_precision, numeric_scale
+                    FROM information_schema.columns 
+                    WHERE table_name = 'holders' AND column_name = 'token_balance'
+                """)
+                result = cursor.fetchone()
+                
+                if result and result[2] < 30:  # precision < 30
+                    logger.info("Migrating token_balance precision from DECIMAL(20,8) to DECIMAL(30,8)")
+                    cursor.execute("""
+                        ALTER TABLE holders 
+                        ALTER COLUMN token_balance TYPE DECIMAL(30, 8)
+                    """)
+                    cursor.execute("""
+                        ALTER TABLE snapshots 
+                        ALTER COLUMN token_balance TYPE DECIMAL(30, 8)
+                    """)
+                    self.conn.commit()
+                    logger.info("Migration completed successfully")
+                
+        except Exception as e:
+            logger.error(f"Error running migrations: {e}")
+            self.conn.rollback()
     
     def get_minimum_usd_threshold(self):
         """Get the minimum USD threshold from settings"""
