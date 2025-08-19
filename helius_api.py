@@ -58,6 +58,8 @@ class HeliusAPI:
                         # Raw amount is in smallest units (e.g., lamports for SOL)
                         # Convert to actual tokens by dividing by 10^decimals
                         actual_amount = amount_raw / (10 ** token_decimals)
+                        # Fix decimal scaling issue - multiply by 1000
+                        actual_amount = actual_amount * 1000
                         logger.debug(f"Wallet {owner[:8]}...{owner[-8:]}: raw={amount_raw}, decimals={token_decimals}, actual={actual_amount}")
                     else:
                         actual_amount = 0.0
