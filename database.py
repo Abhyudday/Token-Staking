@@ -343,6 +343,23 @@ class Database:
                 'db_size': 'Unknown'
             }
     
+    def get_first_seen_date(self, wallet_address):
+        """Get the first seen date for a wallet address"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT first_seen_date FROM holders WHERE wallet_address = %s
+                """, (wallet_address,))
+                
+                result = cursor.fetchone()
+                if result:
+                    return result[0]
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting first seen date for {wallet_address}: {e}")
+            return None
+    
     def close(self):
         """Close database connection"""
         if self.conn:

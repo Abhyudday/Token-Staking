@@ -55,8 +55,9 @@ class SnapshotService:
                     # Upsert holder record
                     self.db.upsert_holder(wallet_address, token_balance, usd_value)
                     
-                    # Add snapshot record
-                    self.db.add_snapshot(wallet_address, token_balance, usd_value)
+                    # Calculate days held and add snapshot record
+                    days_held = self._calculate_days_held(wallet_address)
+                    self.db.add_snapshot(wallet_address, token_balance, usd_value, days_held)
                     
                     processed_count += 1
                     
@@ -70,19 +71,24 @@ class SnapshotService:
             logger.error(f"Error taking daily snapshot: {e}")
             raise
     
-    def _calculate_days_held(self, first_seen_date):
-        """Calculate how many days a holder has held tokens"""
-        if not first_seen_date:
-            return 0
-        
-        if isinstance(first_seen_date, str):
-            first_seen_date = datetime.strptime(first_seen_date, '%Y-%m-%d').date()
-        
-        today = date.today()
-        days_held = (today - first_seen_date).days
-        
-        # Ensure days_held is at least 1 for current holders
-        return max(1, days_held)
+    def _calculate_days_held(self, wallet_address):
+        """Calculate days held for a wallet address"""
+        try:
+            # Get the first seen date for this wallet
+            first_seen_date = self.db.get_first_seen_date(wallet_address)
+            if not first_seen_date:
+                return 1  # First time seeing this wallet
+            
+            # Calculate days since first seen
+            from datetime import date
+            today = date.today()
+            days_held = (today - first_seen_date).days + 1  # +1 to include today
+            
+            return max(1, days_held)  # Minimum 1 day
+            
+        except Exception as e:
+            logger.error(f"Error calculating days held for {wallet_address}: {e}")
+            return 1  # Default to 1 day on error
     
     def get_snapshot_stats(self):
         """Get statistics about the current snapshot"""
