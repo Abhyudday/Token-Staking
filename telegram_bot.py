@@ -4,7 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from database import Database
 from snapshot_service import SnapshotService
-from solscan_api import SolscanAPI
+from helius_api import HeliusAPI
 from config import Config
 import json
 
@@ -19,7 +19,7 @@ class TokenHolderBot:
     def __init__(self):
         self.db = Database()
         self.snapshot_service = SnapshotService()
-        self.solscan = SolscanAPI()
+        self.helius = HeliusAPI()
         self.token_address = Config.TOKEN_CONTRACT_ADDRESS
         
         # Initialize bot application
@@ -159,7 +159,7 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             logger.info(f"Checking rank for wallet: {wallet_address[:8]}...{wallet_address[-8:]}")
             
             # Validate wallet address
-            if not self.solscan.validate_wallet_address(wallet_address):
+            if not self.helius.validate_wallet_address(wallet_address):
                 logger.warning(f"Invalid wallet address provided: {wallet_address}")
                 await update.message.reply_text("❌ Invalid Solana wallet address.")
                 return

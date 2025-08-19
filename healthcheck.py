@@ -10,7 +10,7 @@ import psutil
 import os
 from datetime import datetime
 from database import Database
-from solscan_api import SolscanAPI
+from helius_api import HeliusAPI
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class HealthChecker:
     def __init__(self):
         self.db = None
-        self.solscan = None
+        self.helius = None
         self.start_time = datetime.now()
     
     def get_system_health(self):
@@ -93,29 +93,20 @@ class HealthChecker:
             }
     
     def get_api_health(self):
-        """Get SOLSCAN API health status"""
+        """Get Helius API health status"""
         try:
-            if not self.solscan:
-                self.solscan = SolscanAPI()
+            if not self.helius:
+                self.helius = HeliusAPI()
             
-            # Test API connection with a simple call
-            token_info = self.solscan.get_token_info(Config.TOKEN_CONTRACT_ADDRESS)
+            # Simple call: try fetching holders for 1 page to validate
+            holders = self.helius.get_token_holders(Config.TOKEN_CONTRACT_ADDRESS, page_limit=1, max_pages=1)
             
-            if token_info:
-                return {
-                    "status": "healthy",
-                    "api": "connected",
-                    "token_name": token_info.get('name', 'Unknown'),
-                    "token_symbol": token_info.get('symbol', 'Unknown'),
-                    "timestamp": datetime.now().isoformat()
-                }
-            else:
-                return {
-                    "status": "warning",
-                    "api": "connected",
-                    "warning": "No token info returned",
-                    "timestamp": datetime.now().isoformat()
-                }
+            return {
+                "status": "healthy" if holders is not None else "warning",
+                "api": "connected",
+                "sample_holders": len(holders or []),
+                "timestamp": datetime.now().isoformat()
+            }
                 
         except Exception as e:
             logger.error(f"API health check failed: {e}")

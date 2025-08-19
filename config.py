@@ -10,8 +10,8 @@ class Config:
     # Database Configuration (Railway)
     DATABASE_URL = os.getenv('DATABASE_URL')
     
-    # SOLSCAN Pro API Configuration
-    SOLSCAN_API_KEY = os.getenv('SOLSCAN_API_KEY')
+    # Helius API Configuration
+    HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')
     
     # Token Configuration
     TOKEN_CONTRACT_ADDRESS = "9M7eYNNP4TdJCmMspKpdbEhvpdds6E5WFVTTLjXfVray"
@@ -25,7 +25,7 @@ class Config:
     @classmethod
     def validate(cls):
         """Validate that all required environment variables are set"""
-        required_vars = ['BOT_TOKEN', 'DATABASE_URL', 'SOLSCAN_API_KEY']
+        required_vars = ['BOT_TOKEN', 'DATABASE_URL', 'HELIUS_API_KEY']
         missing_vars = [var for var in required_vars if not getattr(cls, var)]
         
         if missing_vars:

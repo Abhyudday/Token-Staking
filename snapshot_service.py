@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, date, timedelta
 from database import Database
-from solscan_api import SolscanAPI
+from helius_api import HeliusAPI
 from config import Config
 import asyncio
 import time
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class SnapshotService:
     def __init__(self):
         self.db = Database()
-        self.solscan = SolscanAPI()
+        self.helius = HeliusAPI()
         self.token_address = Config.TOKEN_CONTRACT_ADDRESS
     
     def take_daily_snapshot(self):
@@ -20,15 +20,14 @@ class SnapshotService:
             logger.info("Starting daily snapshot process...")
             
             # Get current token price
-            token_price = self.solscan.get_token_price(self.token_address)
+            token_price = self.helius.get_token_price_usd(self.token_address)
             if token_price == 0:
-                logger.error("Failed to get token price, aborting snapshot")
-                return False
+                logger.warning("Token price unavailable; proceeding with $0.00 for USD calculations")
+            else:
+                logger.info(f"Current token price: ${token_price}")
             
-            logger.info(f"Current token price: ${token_price}")
-            
-            # Get all token holders
-            holders = self.solscan.get_token_holders(self.token_address, limit=10000)
+            # Get all token holders via Helius
+            holders = self.helius.get_token_holders(self.token_address, page_limit=1000)
             if not holders:
                 logger.error("Failed to get token holders, aborting snapshot")
                 return False
@@ -46,7 +45,7 @@ class SnapshotService:
                         continue
                     
                     # Calculate USD value
-                    usd_value = token_balance * token_price
+                    usd_value = token_balance * (token_price or 0)
                     
                     # Get or create holder record
                     first_seen_date = self.db.upsert_holder(wallet_address, token_balance, usd_value)
@@ -58,8 +57,8 @@ class SnapshotService:
                     if self.db.add_snapshot(wallet_address, token_balance, usd_value, days_held):
                         processed_count += 1
                     
-                    # Rate limiting to avoid API limits
-                    time.sleep(0.1)
+                    # Gentle pacing
+                    time.sleep(0.02)
                     
                 except Exception as e:
                     logger.error(f"Error processing holder {holder.get('owner', 'unknown')}: {e}")
