@@ -15,22 +15,30 @@ class SnapshotService:
         self.token_address = Config.TOKEN_CONTRACT_ADDRESS
     
     def take_daily_snapshot(self):
-        """Take a daily snapshot of all token holders"""
+        """Take a daily snapshot of token holders"""
         try:
             logger.info("Starting daily snapshot process...")
             
             # Get current token price
             token_price = self.helius.get_token_price_usd(self.token_address)
-            if token_price == 0:
-                logger.warning("Token price unavailable; proceeding with $0.00 for USD calculations")
-            else:
-                logger.info(f"Current token price: ${token_price}")
             
-            # Get all token holders via Helius
-            holders = self.helius.get_token_holders(self.token_address, page_limit=1000)
+            # Check if admin set manual price
+            if hasattr(self, 'manual_token_price') and self.manual_token_price:
+                token_price = self.manual_token_price
+                logger.info(f"Using admin-set manual price: ${token_price}")
+            elif token_price > 0:
+                logger.info(f"Using API price: ${token_price}")
+            else:
+                logger.warning("Token price unavailable; proceeding with $0.00 for USD calculations")
+                token_price = 0.0
+            
+            # Get current token holders
+            logger.info("Fetching current token holders...")
+            holders = self.helius.get_token_holders(self.token_address, page_limit=1000, max_pages=100)
+            
             if not holders:
-                logger.error("Failed to get token holders, aborting snapshot")
-                return False
+                logger.warning("No token holders found")
+                return
             
             logger.info(f"Found {len(holders)} token holders")
             
@@ -38,38 +46,29 @@ class SnapshotService:
             processed_count = 0
             for holder in holders:
                 try:
-                    wallet_address = holder.get("owner")
-                    token_balance = float(holder.get("amount", 0))
-                    
-                    if not wallet_address or token_balance <= 0:
-                        continue
+                    wallet_address = holder['owner']
+                    token_balance = holder['amount']
                     
                     # Calculate USD value
-                    usd_value = token_balance * (token_price or 0)
+                    usd_value = token_balance * token_price if token_price > 0 else 0.0
                     
-                    # Get or create holder record
-                    first_seen_date = self.db.upsert_holder(wallet_address, token_balance, usd_value)
+                    # Upsert holder record
+                    self.db.upsert_holder(wallet_address, token_balance, usd_value)
                     
-                    # Calculate days held
-                    days_held = self._calculate_days_held(first_seen_date)
+                    # Add snapshot record
+                    self.db.add_snapshot(wallet_address, token_balance, usd_value)
                     
-                    # Add snapshot
-                    if self.db.add_snapshot(wallet_address, token_balance, usd_value, days_held):
-                        processed_count += 1
-                    
-                    # Gentle pacing
-                    time.sleep(0.02)
+                    processed_count += 1
                     
                 except Exception as e:
                     logger.error(f"Error processing holder {holder.get('owner', 'unknown')}: {e}")
                     continue
             
-            logger.info(f"Daily snapshot completed. Processed {processed_count} holders.")
-            return True
+            logger.info(f"Snapshot completed successfully. Processed {processed_count} holders.")
             
         except Exception as e:
-            logger.error(f"Error during daily snapshot: {e}")
-            return False
+            logger.error(f"Error taking daily snapshot: {e}")
+            raise
     
     def _calculate_days_held(self, first_seen_date):
         """Calculate how many days a holder has held tokens"""

@@ -302,6 +302,47 @@ class Database:
             logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             return 0
     
+    def get_bot_stats(self):
+        """Get comprehensive bot statistics"""
+        try:
+            stats = {}
+            
+            with self.conn.cursor() as cursor:
+                # Total holders
+                cursor.execute("SELECT COUNT(*) FROM holders")
+                stats['total_holders'] = cursor.fetchone()[0]
+                
+                # Total snapshots
+                cursor.execute("SELECT COUNT(*) FROM snapshots")
+                stats['total_snapshots'] = cursor.fetchone()[0]
+                
+                # Last snapshot date
+                cursor.execute("SELECT MAX(snapshot_date) FROM snapshots")
+                last_snapshot = cursor.fetchone()[0]
+                stats['last_snapshot'] = last_snapshot.strftime('%Y-%m-%d %H:%M') if last_snapshot else 'Never'
+                
+                # Min USD threshold
+                stats['min_usd_threshold'] = self.get_minimum_usd_threshold()
+                
+                # Database size (approximate)
+                cursor.execute("""
+                    SELECT pg_size_pretty(pg_database_size(current_database()))
+                """)
+                db_size = cursor.fetchone()[0]
+                stats['db_size'] = db_size
+                
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting bot stats: {e}")
+            return {
+                'total_holders': 0,
+                'total_snapshots': 0,
+                'last_snapshot': 'Error',
+                'min_usd_threshold': 0.0,
+                'db_size': 'Unknown'
+            }
+    
     def close(self):
         """Close database connection"""
         if self.conn:

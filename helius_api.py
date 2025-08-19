@@ -59,23 +59,77 @@ class HeliusAPI:
         return [{"owner": owner, "amount": amount} for owner, amount in holders.items()]
 
     def get_token_price_usd(self, token_mint: str) -> float:
-        """Fetch token price in USD using Jupiter API as primary source.
-        Jupiter is more reliable for Solana token prices.
-        """
+        """Fetch token price in USD using multiple price sources for reliability."""
+        price_sources = [
+            ("Jupiter API", self._get_jupiter_price),
+            ("Birdeye API", self._get_birdeye_price),
+            ("Helius Token Metadata", self._get_helius_price),
+            ("Raydium API", self._get_raydium_price)
+        ]
+        
+        for source_name, price_func in price_sources:
+            try:
+                price = price_func(token_mint)
+                if price and price > 0:
+                    logger.info(f"{source_name} returned price: ${price}")
+                    return float(price)
+                else:
+                    logger.info(f"{source_name} returned no price or $0")
+            except Exception as e:
+                logger.warning(f"{source_name} failed: {e}")
+                continue
+        
+        logger.warning(f"All price sources failed for token {token_mint}")
+        return 0.0
+    
+    def _get_jupiter_price(self, token_mint: str) -> float:
+        """Get price from Jupiter API"""
         try:
-            # Try Jupiter API first (most reliable for Solana tokens)
             jupiter_params = {"ids": token_mint}
             resp = requests.get(self.jupiter_price_url, params=jupiter_params, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 if data and "data" in data and token_mint in data["data"]:
                     price = data["data"][token_mint].get("price")
-                    if price is not None:
-                        logger.info(f"Jupiter API returned price: ${price}")
+                    if price is not None and price > 0:
                         return float(price)
-            
-            # Fallback: Try Helius token metadata
-            logger.info("Jupiter API failed, trying Helius token metadata...")
+        except Exception as e:
+            logger.debug(f"Jupiter API error: {e}")
+        return 0.0
+    
+    def _get_birdeye_price(self, token_mint: str) -> float:
+        """Get price from Birdeye API"""
+        try:
+            birdeye_url = f"https://public-api.birdeye.so/public/price?address={token_mint}"
+            resp = requests.get(birdeye_url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and data.get("success") and "data" in data:
+                    price = data["data"].get("value")
+                    if price is not None and price > 0:
+                        return float(price)
+        except Exception as e:
+            logger.debug(f"Birdeye API error: {e}")
+        return 0.0
+    
+    def _get_raydium_price(self, token_mint: str) -> float:
+        """Get price from Raydium API"""
+        try:
+            raydium_url = f"https://api.raydium.io/v2/sdk/liquidity/mainnet/{token_mint}"
+            resp = requests.get(raydium_url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and "price" in data:
+                    price = data["price"]
+                    if price is not None and price > 0:
+                        return float(price)
+        except Exception as e:
+            logger.debug(f"Raydium API error: {e}")
+        return 0.0
+    
+    def _get_helius_price(self, token_mint: str) -> float:
+        """Get price from Helius token metadata"""
+        try:
             helius_url = f"https://api.helius.xyz/v0/token-metadata?api-key={self.api_key}"
             resp = requests.post(helius_url, json={"mintAccounts": [token_mint]}, timeout=15)
             if resp.status_code == 200:
@@ -83,16 +137,11 @@ class HeliusAPI:
                 if arr and isinstance(arr, list):
                     md = arr[0] or {}
                     price = md.get("price") or md.get("priceInfo", {}).get("price")
-                    if price is not None:
-                        logger.info(f"Helius returned price: ${price}")
+                    if price is not None and price > 0:
                         return float(price)
-            
-            logger.warning(f"Token price not available from Jupiter or Helius for {token_mint}")
-            return 0.0
-            
         except Exception as e:
-            logger.error(f"Error fetching token price: {e}")
-            return 0.0
+            logger.debug(f"Helius API error: {e}")
+        return 0.0
 
     def validate_wallet_address(self, wallet_address: str) -> bool:
         try:

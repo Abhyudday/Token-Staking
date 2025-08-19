@@ -117,8 +117,8 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
                 usd_value = holder['usd_value'] or 0
                 token_balance = holder['token_balance'] or 0
                 
-                # Truncate wallet address for display
-                display_wallet = f"{wallet[:8]}...{wallet[-8:]}"
+                # Show full wallet address
+                display_wallet = wallet
                 
                 message += f"**{i}.** {display_wallet}\n"
                 message += f"   📅 {days_held} days | 💰 ${usd_value:,.2f} | 🪙 {token_balance:,.2f}\n\n"
@@ -256,33 +256,37 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
     
     async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /admin command"""
-        user_id = update.effective_user.id
-        logger.info(f"Admin command requested by user {user_id}")
-        
-        if user_id not in Config.ADMIN_USER_IDS:
-            logger.warning(f"Unauthorized admin access attempt by user {user_id}")
-            await update.message.reply_text("❌ Access denied. Admin privileges required.")
-            return
-        
-        logger.info(f"Admin access granted to user {user_id}")
-        
-        # Create admin panel keyboard
-        keyboard = [
-            [InlineKeyboardButton("📊 View Stats", callback_data="admin_stats")],
-            [InlineKeyboardButton("💰 Set USD Threshold", callback_data="set_threshold")],
-            [InlineKeyboardButton("📸 Manual Snapshot", callback_data="manual_snapshot")],
-            [InlineKeyboardButton("🧹 Cleanup Old Data", callback_data="cleanup_data")],
-            [InlineKeyboardButton("✅ Validate Data", callback_data="validate_data")]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🔧 **Admin Panel**\n\nSelect an option:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        logger.info(f"Admin panel displayed to user {user_id}")
+        try:
+            logger.info(f"Admin command requested by user {update.effective_user.id}")
+            
+            # Check if user is admin
+            if not self._is_admin(update.effective_user.id):
+                logger.warning(f"Non-admin user {update.effective_user.id} attempted to access admin panel")
+                await update.message.reply_text("❌ Access denied. Admin privileges required.")
+                return
+            
+            # Create admin panel with inline keyboard
+            keyboard = [
+                [InlineKeyboardButton("💰 Set Min USD Threshold", callback_data="admin_set_threshold")],
+                [InlineKeyboardButton("📊 View Bot Stats", callback_data="admin_view_stats")],
+                [InlineKeyboardButton("🔄 Manual Snapshot", callback_data="admin_manual_snapshot")],
+                [InlineKeyboardButton("💵 Set Token Price", callback_data="admin_set_price")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            current_threshold = self.db.get_minimum_usd_threshold()
+            message = f"🔧 **Admin Panel**\n\n"
+            message += f"Current minimum USD threshold: **${current_threshold:.2f}**\n"
+            message += f"Token contract: `{self.token_address}`\n\n"
+            message += "Select an option:"
+            
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+            logger.info(f"Admin panel displayed for user {update.effective_user.id}")
+            
+        except Exception as e:
+            logger.error(f"Error in admin command: {e}")
+            await update.message.reply_text("❌ Error accessing admin panel. Please try again later.")
     
     async def snapshot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /snapshot command (admin only)"""
@@ -331,16 +335,17 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
             await query.edit_message_text("❌ Access denied.")
             return
         
-        if query.data == "admin_stats":
-            await self._handle_admin_stats(query)
-        elif query.data == "set_threshold":
-            await self._handle_set_threshold(query)
-        elif query.data == "manual_snapshot":
-            await self._handle_manual_snapshot(query)
-        elif query.data == "cleanup_data":
-            await self._handle_cleanup_data(query)
-        elif query.data == "validate_data":
-            await self._handle_validate_data(query)
+        if query.data == "admin_set_threshold":
+            await self._handle_admin_set_threshold(query)
+        elif query.data == "admin_view_stats":
+            await self._handle_admin_view_stats(update, context)
+        elif query.data == "admin_manual_snapshot":
+            await self._handle_admin_manual_snapshot(update, context)
+        elif query.data == "admin_set_price":
+            await self._handle_admin_set_price(update, context)
+        else:
+            logger.warning(f"Unknown callback data: {query.data}")
+            await query.answer("Unknown option selected")
     
     async def _handle_admin_stats(self, query):
         """Handle admin stats button"""
@@ -444,6 +449,114 @@ The bot takes daily snapshots to track how long each wallet has held tokens. The
         except Exception as e:
             logger.error(f"Error in validation: {e}")
             await query.edit_message_text("❌ Error during validation.")
+    
+    async def _handle_admin_set_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin setting token price"""
+        try:
+            message = "💵 **Set Token Price**\n\n"
+            message += "Please send the token price in USD.\n"
+            message += "Example: `0.00000123` or `1.23`\n\n"
+            message += "This will be used for USD calculations until the next snapshot."
+            
+            # Store state for price input
+            context.user_data['awaiting_price_input'] = True
+            
+            await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+            logger.info("Admin price input requested")
+            
+        except Exception as e:
+            logger.error(f"Error in admin set price: {e}")
+            await update.callback_query.answer("Error setting price")
+    
+    async def _handle_admin_manual_snapshot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin manual snapshot"""
+        try:
+            await update.callback_query.answer("Starting manual snapshot...")
+            
+            # Start snapshot in background
+            import threading
+            snapshot_thread = threading.Thread(target=self.snapshot_service.take_daily_snapshot)
+            snapshot_thread.start()
+            
+            await update.callback_query.edit_message_text(
+                "🔄 **Manual Snapshot Started**\n\n"
+                "Snapshot is running in the background.\n"
+                "Check logs for progress updates."
+            )
+            logger.info("Manual snapshot started by admin")
+            
+        except Exception as e:
+            logger.error(f"Error starting manual snapshot: {e}")
+            await update.callback_query.answer("Error starting snapshot")
+    
+    async def _handle_admin_view_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin viewing bot stats"""
+        try:
+            stats = self.db.get_bot_stats()
+            
+            message = "📊 **Bot Statistics**\n\n"
+            message += f"**Total Holders:** {stats.get('total_holders', 0)}\n"
+            message += f"**Total Snapshots:** {stats.get('total_snapshots', 0)}\n"
+            message += f"**Last Snapshot:** {stats.get('last_snapshot', 'Never')}\n"
+            message += f"**Min USD Threshold:** ${stats.get('min_usd_threshold', 0):.2f}\n"
+            message += f"**Database Size:** {stats.get('db_size', 'Unknown')}\n"
+            
+            await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+            logger.info("Admin stats displayed")
+            
+        except Exception as e:
+            logger.error(f"Error displaying admin stats: {e}")
+            await update.callback_query.answer("Error displaying stats")
+    
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming messages"""
+        try:
+            # Check if admin is setting price
+            if context.user_data.get('awaiting_price_input') and self._is_admin(update.effective_user.id):
+                await self._handle_price_input(update, context)
+                return
+            
+            # Ignore other messages
+            return
+            
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+    
+    async def _handle_price_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin price input"""
+        try:
+            price_text = update.message.text.strip()
+            
+            # Validate price input
+            try:
+                price = float(price_text)
+                if price <= 0:
+                    await update.message.reply_text("❌ Price must be greater than 0.")
+                    return
+            except ValueError:
+                await update.message.reply_text("❌ Invalid price format. Please send a number like `0.00000123`")
+                return
+            
+            # Store the price for next snapshot
+            context.user_data['manual_token_price'] = price
+            context.user_data['awaiting_price_input'] = False
+            
+            message = f"✅ **Token Price Set**\n\n"
+            message += f"Price: **${price:.8f}**\n\n"
+            message += "This price will be used for the next snapshot.\n"
+            message += "Run `/snapshot` to apply the new price immediately."
+            
+            await update.message.reply_text(message, parse_mode='Markdown')
+            logger.info(f"Admin set manual token price: ${price}")
+            
+        except Exception as e:
+            logger.error(f"Error handling price input: {e}")
+            await update.message.reply_text("❌ Error setting price. Please try again.")
+            context.user_data['awaiting_price_input'] = False
+    
+    def _is_admin(self, user_id: int) -> bool:
+        """Check if user is admin"""
+        return user_id in Config.ADMIN_USER_IDS
     
     def run(self):
         """Start the bot"""
