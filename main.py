@@ -20,6 +20,7 @@ import signal
 import sys
 import threading
 import os
+import time
 from telegram_bot import TokenHolderBot
 from scheduler import SnapshotScheduler
 from config import Config
@@ -68,10 +69,25 @@ class TokenHolderBotApp:
             )
             self.health_server_thread.start()
             
-            logger.info("Health check server started successfully")
+            # Wait a moment to ensure server starts
+            time.sleep(2)
+            
+            # Test if server is responding
+            try:
+                import requests
+                test_response = requests.get(f"http://localhost:{port}/health", timeout=5)
+                if test_response.status_code == 200:
+                    logger.info("Health check server started successfully and responding")
+                else:
+                    logger.warning(f"Health server responded with status {test_response.status_code}")
+            except Exception as e:
+                logger.warning(f"Could not test health server response: {e}")
+                logger.info("Health server thread started (response test failed)")
             
         except Exception as e:
             logger.error(f"Failed to start health server: {e}")
+            # Don't fail the entire app if health server fails
+            logger.warning("Continuing without health server...")
     
     def start(self):
         """Start the bot and scheduler (non-async version)"""
